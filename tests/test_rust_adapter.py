@@ -7,16 +7,21 @@ use std::collections::HashMap;
 use crate::utils::{self, helper};
 
 pub struct Db<T> {
+    name: String,
     connections: HashMap<String, T>,
 }
 
 impl<T> Db<T> {
     pub fn new() -> Self {
-        Db { connections: HashMap::new() }
+        Db { name: String::new(), connections: HashMap::new() }
     }
     
     pub fn add_connection(&mut self, name: String, conn: T) {
         self.connections.insert(name, conn);
+    }
+
+    pub fn set_name(&mut self, new_name: String) {
+        self.name = new_name;
     }
 }
 
@@ -60,6 +65,11 @@ fn internal_func() {}
     # In this case there's no direct assignment to `self.connections` (it's a method call `.insert()`).
     # Direct assignment mutation would be: `self.connections = ...` which would be captured.
     assert add_conn_func.mutates == []
+
+    assert "Db::set_name" in funcs
+    set_name_func = funcs["Db::set_name"]
+    assert set_name_func.signature == "pub fn set_name(&mut self, new_name: String)"
+    assert set_name_func.mutates == ["self.name"]
 
     assert "run_app" in funcs
     run_app_func = funcs["run_app"]

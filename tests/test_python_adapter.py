@@ -7,6 +7,7 @@ import os
 from sys import argv
 from . import local_mod
 from ..parent_mod import parent_func
+from .sibling import helper_func as alias_helper
 
 __all__ = ["export_one", "export_two"]
 
@@ -41,7 +42,7 @@ def _internal_helper():
     assert struct.exports == ["export_one", "export_two"]
 
     # 2. Assert raw imports
-    assert len(struct.imports_raw) == 4
+    assert len(struct.imports_raw) == 5
     # Check import os
     assert struct.imports_raw[0].module == "os"
     # Check from sys import argv
@@ -55,6 +56,12 @@ def _internal_helper():
     assert struct.imports_raw[3].module == "parent_mod"
     assert struct.imports_raw[3].names == ["parent_func"]
     assert struct.imports_raw[3].level == 2
+
+    # Check from .sibling import helper_func as alias_helper — alias is captured
+    assert struct.imports_raw[4].module == "sibling"
+    assert struct.imports_raw[4].names == ["helper_func"]
+    assert struct.imports_raw[4].level == 1
+    assert struct.imports_raw[4].alias == "alias_helper"
 
     # 3. Assert functions and mutations
     funcs = {f"{f.class_name}::{f.name}" if f.class_name else f.name: f for f in struct.functions}

@@ -45,7 +45,9 @@ def get_rust_parent_module(file_path: str, files_set: set[str]) -> str | None:
         
     candidates = [
         parent_dir.with_suffix(".rs"),
-        parent_dir / "mod.rs"
+        parent_dir / "mod.rs",
+        parent_dir / "lib.rs",
+        parent_dir / "main.rs",
     ]
     for cand in candidates:
         cand_str = cand.as_posix()
@@ -110,12 +112,17 @@ def resolve_rust_import(current_file: str, import_stmt: ImportStatement, files_s
             if not remaining:
                 resolved.append(curr)
             else:
+                first_item = remaining[0]
+                if first_item in exports_map.get(curr, []):
+                    resolved.append(curr)
+                    continue
+
                 curr_path = Path(curr)
-                if curr_path.name == "mod.rs":
+                if curr_path.name in ("mod.rs", "lib.rs", "main.rs"):
                     base_dir = curr_path.parent
                 else:
                     base_dir = curr_path.parent / curr_path.stem
-                
+
                 resolved_path = resolve_rust_segments(base_dir, remaining, files_set, exports_map)
                 if resolved_path:
                     resolved.append(resolved_path)

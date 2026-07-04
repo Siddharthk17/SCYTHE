@@ -37,3 +37,9 @@ coverage/
 *.sqlite
 *.sqlite3
 node_modules/
+
+# ctx index database — regenerable local index, never committed
+.ctx/
+.ctx/index.db
+.ctx/index.db-wal
+.ctx/index.db-shm

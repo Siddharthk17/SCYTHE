@@ -30,6 +30,7 @@ def test_resolve_imports_graph(tmp_path):
         "src/lib.rs": "rust",
         "src/utils.rs": "rust",
         "src/utils/helper.rs": "rust",
+        "src/sub/mod.rs": "rust",
     }
     
     for relative_path in files_languages:
@@ -39,6 +40,7 @@ def test_resolve_imports_graph(tmp_path):
         
     files_exports = {
         "src/utils.rs": ["util_func"],
+        "src/lib.rs": ["lib_func"],
         "pkg/b.py": ["FuncB"],
     }
     
@@ -59,6 +61,10 @@ def test_resolve_imports_graph(tmp_path):
         "src/utils/helper.rs": [
             ImportStatement(module="crate::utils", names=["util_func"]),
             ImportStatement(module="std::io", names=["Read"]),
+        ],
+        "src/sub/mod.rs": [
+            ImportStatement(module="super::utils", names=["util_func"]),
+            ImportStatement(module="super::lib_func", names=[]),
         ],
     }
     
@@ -81,7 +87,14 @@ def test_resolve_imports_graph(tmp_path):
     # Assert Rust resolution
     assert set(resolved_imports["src/utils/helper.rs"]) == {"src/utils.rs"}
     
+    # Assert Rust super:: resolution — src/sub/mod.rs should resolve to parent files
+    # super::utils → src/utils.rs, super::lib_func → src/lib.rs
+    assert set(resolved_imports["src/sub/mod.rs"]) == {"src/utils.rs", "src/lib.rs"}
+    
     # Assert used_by reverse edges are correctly populated
     assert used_by["pkg/b.py"] == ["pkg/a.py"]
     assert used_by["src/utils.ts"] == ["src/components/Button.tsx"]
     assert sorted(used_by["db/db.go"]) == ["main.go"]
+    # Rust super:: used_by edges
+    assert "src/sub/mod.rs" in used_by["src/utils.rs"]
+    assert "src/sub/mod.rs" in used_by["src/lib.rs"]

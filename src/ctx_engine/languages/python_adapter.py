@@ -88,6 +88,7 @@ class PythonAdapter:
             elif node.type == "import_from_statement":
                 level = 0
                 module_name = ""
+                from_alias: str | None = None
                 
                 for child in node.children:
                     if child.type == "import":
@@ -107,12 +108,16 @@ class PythonAdapter:
 
                 names = []
                 def collect_names(n: Node):
+                    nonlocal from_alias
                     if n.type == "dotted_name":
                         names.append(n.text.decode("utf-8"))
                     elif n.type == "aliased_import":
                         name_node = n.child_by_field_name("name")
+                        alias_node = n.child_by_field_name("alias")
                         if name_node:
                             names.append(name_node.text.decode("utf-8"))
+                        if alias_node:
+                            from_alias = alias_node.text.decode("utf-8")
                     elif n.type == "wildcard_import" or n.text.decode("utf-8") == "*":
                         names.append("*")
                     for child_node in n.children:
@@ -129,7 +134,8 @@ class PythonAdapter:
                 imports_raw.append(ImportStatement(
                     module=module_name,
                     names=names,
-                    level=level
+                    level=level,
+                    alias=from_alias
                 ))
 
         def walk_tree(node: Node, inside_class_depth: int = 0):
