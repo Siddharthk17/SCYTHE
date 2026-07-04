@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ctx-codebase"
+version = "0.1.0"
+description = "Auto-updating codebase context engine"
+requires-python = ">=3.10"
+dependencies = [
+    "tree-sitter>=0.23",
+    "tree-sitter-python>=0.23",
+    "tree-sitter-javascript>=0.23",
+    "tree-sitter-typescript>=0.23",
+    "tree-sitter-go>=0.23",
+    "tree-sitter-rust>=0.23",
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+ctx = "ctx_engine.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ctx_engine"]
+
