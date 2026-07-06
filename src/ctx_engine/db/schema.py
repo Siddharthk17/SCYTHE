@@ -38,6 +38,7 @@ TABLES_DDL = [
         is_tainted    INTEGER DEFAULT 0,
         taint_source  TEXT,
         confidence    REAL DEFAULT 1.0,
+        is_stale      INTEGER DEFAULT 0,
         updated_at    TEXT
     );
     """,

@@ -1,3 +1,5 @@
+# status command implementation for ctx.
+
 import sqlite3
 from pathlib import Path
 from ctx_engine.discovery import EXTENSION_TO_LANGUAGE
@@ -45,6 +47,17 @@ def run_status(repo_root: Path) -> None:
     except sqlite3.OperationalError:
         fts_available = False
 
+    # 7. Confidence distribution and staleness/taint statistics
+    fresh = conn.execute("SELECT count(*) FROM functions WHERE confidence >= 1.0;").fetchone()[0]
+    decayed_once = conn.execute("SELECT count(*) FROM functions WHERE confidence >= 0.5 AND confidence < 1.0;").fetchone()[0]
+    low_confidence = conn.execute("SELECT count(*) FROM functions WHERE confidence >= 0.2 AND confidence < 0.5;").fetchone()[0]
+    likely_stale = conn.execute("SELECT count(*) FROM functions WHERE confidence < 0.2;").fetchone()[0]
+
+    stale_functions_count = conn.execute("SELECT count(*) FROM functions WHERE is_stale = 1;").fetchone()[0]
+    stale_files_count = conn.execute("SELECT count(*) FROM files WHERE is_stale = 1;").fetchone()[0]
+    tainted_functions_count = conn.execute("SELECT count(*) FROM functions WHERE is_tainted = 1;").fetchone()[0]
+    taint_queue_count = conn.execute("SELECT count(*) FROM taint_queue;").fetchone()[0]
+
     conn.close()
 
     # Output status report
@@ -75,3 +88,13 @@ def run_status(repo_root: Path) -> None:
     print("  call graph:")
     print(f"    unresolved calls: {unresolved_calls}")
     print(f"    ambiguous calls: {ambiguous_calls}")
+    print()
+    print("  confidence distribution:")
+    print(f"    1.0          : {fresh:<6} (fresh)")
+    print(f"    0.5 - 1.0    : {decayed_once:<6} (decayed once)")
+    print(f"    0.2 - 0.5    : {low_confidence:<6} [LOW CONFIDENCE]")
+    print(f"    0.0 - 0.2    : {likely_stale:<6} [LIKELY STALE]")
+    print()
+    print(f"  is_stale: {stale_functions_count} functions, {stale_files_count} files")
+    print(f"  is_tainted: {tainted_functions_count} functions")
+    print(f"  taint_queue: {taint_queue_count} entries")
