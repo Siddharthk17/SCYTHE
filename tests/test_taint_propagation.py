@@ -49,6 +49,8 @@ def test_taint_propagation_caller_cascade():
     assert queue_row[1] == 'b.py::B'
     assert queue_row[2] == 0
 
+    conn.close()
+
 def test_taint_propagation_last_write_wins():
     """Verify that multiple taint propagations to the same caller resolve via last-write-wins."""
     conn = sqlite3.connect(":memory:")
@@ -79,6 +81,8 @@ def test_taint_propagation_last_write_wins():
     assert queue_row[0] == 'a.py::A'
     assert queue_row[1] == 'b2.py::B2'
 
+    conn.close()
+
 def test_taint_propagation_removed_function():
     """Verify that removing a function uses the pre-deletion caller snapshot for taint propagation."""
     conn = sqlite3.connect(":memory:")
@@ -97,3 +101,5 @@ def test_taint_propagation_removed_function():
     queue_row = conn.execute("SELECT function_id, taint_source FROM taint_queue;").fetchone()
     assert queue_row[0] == 'a.py::A'
     assert queue_row[1] == 'b.py::B'
+
+    conn.close()

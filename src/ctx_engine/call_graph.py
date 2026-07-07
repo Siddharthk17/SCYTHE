@@ -67,7 +67,6 @@ def resolve_calls(
 ) -> list[dict]:
     """Resolve call edges between functions based on import scope and duck typing rules."""
     # Build lookups
-    funcs_by_id = {f["id"]: f for f in functions_list}
     funcs_by_file = {}
     funcs_by_name = {}
 

@@ -1,7 +1,7 @@
 import pytest
 import sqlite3
 import json
-from unittest.mock import MagicMock, patch
+
 from ctx_engine.db import init_schema
 from ctx_engine.intelligence.llm_client import (
     batch_files,
@@ -62,6 +62,7 @@ def test_get_taint_warning():
     
     # Missing source ID fallback
     assert "depends on b.py::Missing, which changed" in get_taint_warning(conn, "b.py::Missing")
+    conn.close()
 
 def test_apply_summary_batch():
     """Verify that apply_summary_batch correctly updates files, functions, and clears taint queue."""
@@ -120,3 +121,4 @@ def test_apply_summary_batch():
     
     # Check taint queue cleared
     assert conn.execute("SELECT count(*) FROM taint_queue").fetchone()[0] == 0
+    conn.close()

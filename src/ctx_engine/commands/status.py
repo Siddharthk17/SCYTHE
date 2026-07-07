@@ -63,7 +63,7 @@ def run_status(repo_root: Path) -> None:
     # Output status report
     print("ctx status")
     print()
-    print(f"  database: .ctx/index.db")
+    print("  database: .ctx/index.db")
     print(f"  journal mode: {journal_mode}")
     print(f"  fts5 search: {'enabled' if fts_available else 'disabled'}")
     print()

@@ -44,7 +44,6 @@ def run_update(repo_root: Path, file_path_str: str) -> None:
 
     # Capture old metadata for diff
     old_purpose = file_row["purpose"]
-    old_summary = file_row["summary"]
     
     old_funcs = {
         row["id"]: row["summary"] for row in conn.execute(

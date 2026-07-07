@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from ctx_engine.languages.base import ImportStatement
 

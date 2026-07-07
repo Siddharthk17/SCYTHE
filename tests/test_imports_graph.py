@@ -1,5 +1,4 @@
 import subprocess
-from pathlib import Path
 from ctx_engine.languages.base import ImportStatement
 from ctx_engine.imports_graph import resolve_imports_graph
 

@@ -1,6 +1,5 @@
 import sqlite3
 import subprocess
-from pathlib import Path
 from ctx_engine.commands import run_init
 
 def test_init_command_integration(tmp_path):

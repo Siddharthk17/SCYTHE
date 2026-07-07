@@ -1,6 +1,5 @@
-from tree_sitter import Parser
 from ctx_engine.languages.registry import get_parser
-from ctx_engine.hashing import file_semantic_hash, function_semantic_hash
+from ctx_engine.hashing import function_semantic_hash
 
 def parse_source(src: str, lang_key: str) -> tuple[any, bytes]:
     source_bytes = src.encode("utf-8")

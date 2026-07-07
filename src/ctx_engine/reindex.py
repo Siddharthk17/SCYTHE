@@ -6,8 +6,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ctx_engine.db import connect
-from ctx_engine.discovery import discover_all_tracked_paths, discover_parseable_files, EXTENSION_TO_LANGUAGE
+from ctx_engine.discovery import EXTENSION_TO_LANGUAGE
 from ctx_engine.hashing import (
     file_content_hash,
     file_semantic_hash,
