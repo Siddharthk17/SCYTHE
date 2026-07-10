@@ -63,11 +63,11 @@ def run_update(repo_root: Path, file_path_str: str) -> None:
 
     # Re-fetch new file and function structures after reindex (line ranges might have shifted)
     refreshed_file = conn.execute(
-        "SELECT path, purpose, summary, danger, exports, imports FROM files WHERE path = ?",
+        "SELECT path, purpose, summary, danger, exports, imports, used_by_count FROM files WHERE path = ?",
         (relative_path,)
     ).fetchone()
     refreshed_funcs = conn.execute(
-        "SELECT id, class_name, name, signature, summary, line_start, line_end, is_tainted, taint_source FROM functions WHERE file = ?",
+        "SELECT id, class_name, name, signature, summary, line_start, line_end, is_tainted, taint_source, mutates FROM functions WHERE file = ?",
         (relative_path,)
     ).fetchall()
 
@@ -79,6 +79,7 @@ def run_update(repo_root: Path, file_path_str: str) -> None:
         funcs_payload.append({
             "id": func_id,
             "signature": func_row["signature"],
+            "mutates": json.loads(func_row["mutates"]) if func_row["mutates"] else [],
             "needs_summary": True,
             "current_summary": func_row["summary"],
             "taint_warning": get_taint_warning(conn, func_row["taint_source"]) if func_row["is_tainted"] == 1 else None,
@@ -89,7 +90,7 @@ def run_update(repo_root: Path, file_path_str: str) -> None:
         "path": relative_path,
         "exports": json.loads(refreshed_file["exports"]) if refreshed_file["exports"] else [],
         "imports": json.loads(refreshed_file["imports"]) if refreshed_file["imports"] else [],
-        "used_by_count": conn.execute("SELECT count(*) FROM files WHERE imports LIKE ?", (f'%"{relative_path}"%',)).fetchone()[0],
+        "used_by_count": refreshed_file["used_by_count"],
         "current_purpose": refreshed_file["purpose"],
         "functions": funcs_payload
     }

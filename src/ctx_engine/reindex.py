@@ -45,7 +45,7 @@ def reindex_file(
     """
     Run Pass 1 of the reindexing pipeline for a single file.
     Compares the new hashes to the stored ones, preserves/decays metadata,
-    and returns (changed_function_ids, removed_function_ids_with_caller_snapshots, ext_data).
+    and returns (changed_function_ids, removed_function_ids_with_caller_snapshots, ext_data, has_parse_errors).
     """
     file_abspath = repo_root / path
     source = file_abspath.read_bytes()
@@ -54,8 +54,9 @@ def reindex_file(
     # Parse and extract
     parser = get_parser(language)
     tree = parser.parse(source)
+    has_parse_errors = tree.root_node.has_error
     
-    if tree.root_node.has_error:
+    if has_parse_errors:
         logger.warning("File %s contains parse errors", path)
 
     adapter = ADAPTERS[language]
@@ -249,26 +250,30 @@ def reindex_file(
             "exports": struct.exports,
             "imports_raw": struct.imports_raw,
             "class_superclasses": struct.class_superclasses,
-            "functions": new_funcs_to_insert
-        }
+            "functions": new_funcs_to_insert,
+        },
+        has_parse_errors,
     )
 
 def run_reindex_pipeline(
     conn: sqlite3.Connection,
     repo_root: Path,
     files_to_reindex: dict[str, str]
-) -> None:
-    """Run the 4-pass reindexing pipeline for the specified files."""
+) -> int:
+    """Run the 4-pass reindexing pipeline for the specified files. Returns the number of files with parse errors."""
     # PASS 1: Extract & Hash Compare
     all_changed_func_ids = set()
     all_removed_funcs_snapshots = []
     reindexed_extractions = {}
+    parse_error_count = 0
 
     for path, language in files_to_reindex.items():
-        c_ids, r_snapshots, ext_data = reindex_file(conn, repo_root, path, language)
+        c_ids, r_snapshots, ext_data, has_parse_errors = reindex_file(conn, repo_root, path, language)
         all_changed_func_ids.update(c_ids)
         all_removed_funcs_snapshots.extend(r_snapshots)
         reindexed_extractions[path] = ext_data
+        if has_parse_errors:
+            parse_error_count += 1
 
     # PASS 2: Import Graph Rebuild
     db_files = [row["path"] for row in conn.execute("SELECT path FROM files").fetchall()]
@@ -436,3 +441,5 @@ def run_reindex_pipeline(
         propagate_taint(conn, cid)
     for rid, snapshot_callers in all_removed_funcs_snapshots:
         propagate_taint(conn, rid, caller_snapshot=snapshot_callers)
+
+    return parse_error_count

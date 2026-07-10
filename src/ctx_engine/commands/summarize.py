@@ -57,10 +57,10 @@ def run_summarize(
 
     # 1. Determine files to summarize
     if force:
-        files_rows = conn.execute("SELECT path, purpose, summary, danger, exports, imports FROM files;").fetchall()
+        files_rows = conn.execute("SELECT path, purpose, summary, danger, exports, imports, used_by_count FROM files;").fetchall()
     else:
         files_rows = conn.execute(
-            "SELECT path, purpose, summary, danger, exports, imports FROM files WHERE purpose IS NULL OR is_stale = 1;"
+            "SELECT path, purpose, summary, danger, exports, imports, used_by_count FROM files WHERE purpose IS NULL OR is_stale = 1;"
         ).fetchall()
 
     if not files_rows:
@@ -77,7 +77,7 @@ def run_summarize(
         
         # Get functions in this file
         funcs_rows = conn.execute(
-            "SELECT id, class_name, name, signature, summary, summary_long, danger, line_start, line_end, is_stale, is_tainted, taint_source FROM functions WHERE file = ?;",
+            "SELECT id, class_name, name, signature, summary, summary_long, danger, line_start, line_end, is_stale, is_tainted, taint_source, mutates FROM functions WHERE file = ?;",
             (path,)
         ).fetchall()
 
@@ -89,6 +89,7 @@ def run_summarize(
             func_data = {
                 "id": func_row["id"],
                 "signature": func_row["signature"],
+                "mutates": json.loads(func_row["mutates"]) if func_row["mutates"] else [],
                 "needs_summary": needs_sum,
                 "current_summary": func_row["summary"],
                 "taint_warning": get_taint_warning(conn, func_row["taint_source"]) if func_row["is_tainted"] == 1 else None,
@@ -102,7 +103,7 @@ def run_summarize(
             "path": path,
             "exports": json.loads(f_row["exports"]) if f_row["exports"] else [],
             "imports": json.loads(f_row["imports"]) if f_row["imports"] else [],
-            "used_by_count": conn.execute("SELECT count(*) FROM files WHERE imports LIKE ?", (f'%"{path}"%',)).fetchone()[0],
+            "used_by_count": f_row["used_by_count"],
             "current_purpose": f_row["purpose"],
             "functions": funcs_payload
         })

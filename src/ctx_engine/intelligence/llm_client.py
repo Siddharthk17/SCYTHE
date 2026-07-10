@@ -89,7 +89,10 @@ def parse_response(text: str) -> list[dict]:
         cleaned = cleaned.split("\n", 1)[1]
         cleaned = cleaned.rsplit("```", 1)[0]
     if cleaned.startswith("json"):
-        cleaned = cleaned.split("\n", 1)[1]
+        if "\n" in cleaned:
+            cleaned = cleaned.split("\n", 1)[1]
+        else:
+            cleaned = cleaned[4:]
     cleaned = cleaned.strip()
     return json.loads(cleaned)
 

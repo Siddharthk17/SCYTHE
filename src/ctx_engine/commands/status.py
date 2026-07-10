@@ -1,7 +1,7 @@
 # status command implementation for ctx.
 
-import sqlite3
 from pathlib import Path
+from ctx_engine.db import connect
 from ctx_engine.discovery import EXTENSION_TO_LANGUAGE
 
 def run_status(repo_root: Path) -> None:
@@ -10,8 +10,7 @@ def run_status(repo_root: Path) -> None:
     if not db_path.exists():
         raise FileNotFoundError("Database not found. Please run 'ctx init' first.")
 
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = connect(db_path)
 
     # 1. Get journal mode
     journal_mode = conn.execute("PRAGMA journal_mode;").fetchone()[0]
