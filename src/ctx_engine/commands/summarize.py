@@ -41,41 +41,39 @@ def get_taint_warning(conn: sqlite3.Connection, taint_source_id: str) -> str:
         return f"depends on {func_name}() in {file_name}, which changed"
     return f"depends on {taint_source_id}, which changed"
 
-def run_summarize(
+def get_summarize_selection(
+    conn: sqlite3.Connection,
     repo_root: Path,
-    batch_size: int = 20,
-    force: bool = False,
-    dry_run: bool = False
-) -> None:
-    """Perform bulk LLM summarization of files/functions needing updates."""
-    db_path = repo_root / ".ctx" / "index.db"
-    if not db_path.exists():
-        raise FileNotFoundError("Database not found. Please run 'ctx init' first.")
+    force: bool = False
+) -> tuple[list[dict], int, list[list[dict]]]:
+    """Build file payloads for summarization selection.
 
-    conn = connect(db_path)
-    conn.row_factory = sqlite3.Row
-
-    # 1. Determine files to summarize
+    Returns (files_data, total_funcs_needing_summary, batches).
+    """
     if force:
-        files_rows = conn.execute("SELECT path, purpose, summary, danger, exports, imports, used_by_count FROM files;").fetchall()
+        files_rows = conn.execute("SELECT path, purpose, summary, danger, exports, imports, used_by_count, is_stale FROM files;").fetchall()
     else:
         files_rows = conn.execute(
-            "SELECT path, purpose, summary, danger, exports, imports, used_by_count FROM files WHERE purpose IS NULL OR is_stale = 1;"
+            """
+            SELECT DISTINCT f.path, f.purpose, f.summary, f.danger, f.exports, f.imports, f.used_by_count, f.is_stale
+            FROM files f
+            WHERE f.purpose IS NULL
+               OR f.is_stale = 1
+               OR EXISTS (
+                   SELECT 1 FROM functions fn
+                   WHERE fn.file = f.path
+                     AND fn.is_tainted = 1
+               )
+            """
         ).fetchall()
 
-    if not files_rows:
-        print("No files need summarization.")
-        conn.close()
-        return
-
-    # 2. Build payloads for each file
     files_data = []
     total_funcs_needing_summary = 0
 
     for f_row in files_rows:
         path = f_row["path"]
-        
-        # Get functions in this file
+        is_taint_only = f_row["purpose"] is not None and f_row["is_stale"] == 0
+
         funcs_rows = conn.execute(
             "SELECT id, class_name, name, signature, summary, summary_long, danger, line_start, line_end, is_stale, is_tainted, taint_source, mutates FROM functions WHERE file = ?;",
             (path,)
@@ -83,9 +81,8 @@ def run_summarize(
 
         funcs_payload = []
         for func_row in funcs_rows:
-            # needs_summary is true if functions is stale, doesn't have summary, or force is active
-            needs_sum = force or func_row["is_stale"] == 1 or func_row["summary"] is None
-            
+            needs_sum = force or func_row["is_stale"] == 1 or func_row["summary"] is None or (is_taint_only and func_row["is_tainted"] == 1)
+
             func_data = {
                 "id": func_row["id"],
                 "signature": func_row["signature"],
@@ -101,6 +98,7 @@ def run_summarize(
 
         files_data.append({
             "path": path,
+            "purpose_needs_update": not is_taint_only,
             "exports": json.loads(f_row["exports"]) if f_row["exports"] else [],
             "imports": json.loads(f_row["imports"]) if f_row["imports"] else [],
             "used_by_count": f_row["used_by_count"],
@@ -108,17 +106,38 @@ def run_summarize(
             "functions": funcs_payload
         })
 
-    # Group into batches
-    batches = batch_files(files_data, max_files_per_batch=batch_size)
+    batches = batch_files(files_data, max_files_per_batch=20)
+    return files_data, total_funcs_needing_summary, batches
+
+
+def run_summarize(
+    repo_root: Path,
+    batch_size: int = 20,
+    force: bool = False,
+    dry_run: bool = False
+) -> None:
+    """Perform bulk LLM summarization of files/functions needing updates."""
+    db_path = repo_root / ".ctx" / "index.db"
+    if not db_path.exists():
+        raise FileNotFoundError("Database not found. Please run 'ctx init' first.")
+
+    conn = connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    files_data, total_funcs_needing_summary, batches = get_summarize_selection(conn, repo_root, force)
+
+    if not files_data:
+        print("No files need summarization.")
+        conn.close()
+        return
 
     # 3. Handle Dry Run
     if dry_run:
-        # Simple character estimate
         total_chars_in = 0
         total_chars_out = 0
         for batch in batches:
             total_chars_in += len(json.dumps(batch)) + len(SYSTEM_INSTRUCTION)
-            total_chars_out += len(batch) * 500  # Estimate 500 characters output per file
+            total_chars_out += len(batch) * 500
 
         in_tokens_est = total_chars_in // 4
         out_tokens_est = total_chars_out // 4
@@ -136,7 +155,7 @@ def run_summarize(
     # 4. Actual execution
     client = get_anthropic_client()
     model = get_model_name()
-    
+
     skipped_files = []
     total_files_updated = 0
     total_funcs_updated = 0
@@ -151,14 +170,13 @@ def run_summarize(
                 client, model, SYSTEM_INSTRUCTION, user_content
             )
             parsed_results = parse_response(response_text)
-            
-            # Apply database changes
+
             files_up, funcs_up = apply_summary_batch(conn, parsed_results)
             total_files_updated += files_up
             total_funcs_updated += funcs_up
             total_in_tokens += in_tok
             total_out_tokens += out_tok
-            
+
             print(f"[{i+1}/{len(batches)}] batch: {len(batch)} files, {batch_funcs_count} functions -> done (in: {in_tok:,} tok, out: {out_tok:,} tok)")
         except Exception as e:
             logger.error("Failed to process batch %d: %s", i + 1, e)
@@ -168,7 +186,6 @@ def run_summarize(
 
     conn.close()
 
-    # 5. Final Report
     repo_name = repo_root.name
     skipped_count = len(skipped_files)
 

@@ -1,8 +1,6 @@
 import subprocess
-import sqlite3
 import gc
 import pytest
-from pathlib import Path
 from ctx_engine.db import connect, init_schema
 from ctx_engine.reindex import reindex_file
 
@@ -112,7 +110,8 @@ def subtract(a, b):
     finally:
         conn.close()
         del conn
-        import gc; gc.collect()
+        import gc
+        gc.collect()
 
 
 def test_reindex_addition_and_removal(temp_repo):

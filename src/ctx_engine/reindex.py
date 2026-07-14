@@ -261,6 +261,7 @@ def run_reindex_pipeline(
     files_to_reindex: dict[str, str]
 ) -> int:
     """Run the 4-pass reindexing pipeline for the specified files. Returns the number of files with parse errors."""
+    conn.row_factory = sqlite3.Row
     # PASS 1: Extract & Hash Compare
     all_changed_func_ids = set()
     all_removed_funcs_snapshots = []

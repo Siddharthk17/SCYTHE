@@ -22,6 +22,7 @@ SYSTEM_INSTRUCTION = (
     "- danger: one concrete invariant specific to this function, or null.\n\n"
     "Context rules:\n"
     "- If a function has a taint_warning, take the warning into account because the dependency it references has changed; its summary should reflect its current behavior in light of that.\n\n"
+    "- If purpose_needs_update is false for a file, do not return purpose, summary, or danger at the file level — return only the functions array for that file.\n\n"
     "Format requirements:\n"
     "Respond with a JSON array only. No markdown code fences, no preamble, no trailing commentary — the response must be valid JSON starting with `[` and ending with `]`."
 )
@@ -127,22 +128,25 @@ def apply_summary_batch(conn: sqlite3.Connection, parsed_results: list[dict]) ->
     with conn:
         for file_obj in parsed_results:
             path = file_obj.get("path")
-            purpose = file_obj.get("purpose")
-            summary = file_obj.get("summary")
-            danger = file_obj.get("danger")
+            purpose_needs_update = file_obj.get("purpose_needs_update", True)
             
             if not path:
                 continue
+            
+            if purpose_needs_update:
+                purpose = file_obj.get("purpose")
+                summary = file_obj.get("summary")
+                danger = file_obj.get("danger")
                 
-            conn.execute(
-                """
-                UPDATE files
-                SET purpose = ?, summary = ?, danger = ?, confidence = 1.0, is_stale = 0, updated_at = ?
-                WHERE path = ?
-                """,
-                (purpose, summary, danger, now, path)
-            )
-            files_updated += 1
+                conn.execute(
+                    """
+                    UPDATE files
+                    SET purpose = ?, summary = ?, danger = ?, confidence = 1.0, is_stale = 0, updated_at = ?
+                    WHERE path = ?
+                    """,
+                    (purpose, summary, danger, now, path)
+                )
+                files_updated += 1
             
             for func_obj in file_obj.get("functions", []):
                 func_id = func_obj.get("id")

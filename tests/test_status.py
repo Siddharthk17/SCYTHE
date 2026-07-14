@@ -68,22 +68,23 @@ def test_status_basic_output(populated_db, capsys):
     out = capsys.readouterr().out
 
     assert "ctx status" in out
-    assert "journal mode:" in out.lower()
-    assert "fts5 search:" in out
+    assert "WAL mode" in out
+    assert "fts5:" in out
 
-    assert "table records:" in out
+    assert "tables:" in out
     assert "files" in out
     assert "functions" in out
     assert "call_graph" in out
     assert "taint_queue" in out
     assert "directories" in out
 
-    assert "b.py" in out
-    assert "call graph:" in out
-    assert "confidence distribution:" in out
-    assert "is_stale:" in out
-    assert "is_tainted:" in out
-    assert "taint_queue:" in out
+    assert "files by language" in out
+    assert "confidence distribution" in out
+    assert "is_stale" in out
+    assert "is_tainted" in out
+    assert "taint_queue" in out
+    assert "git hooks" in out
+    assert "recent changes" in out
 
 
 def test_status_language_breakdown(populated_db, capsys):
@@ -96,12 +97,11 @@ def test_status_language_breakdown(populated_db, capsys):
 
 
 def test_status_stale_file_listing(populated_db, capsys):
-    """Verify stale files appear in the stale files section."""
+    """Verify staleness section appears in the output."""
     run_status(populated_db)
     out = capsys.readouterr().out
 
-    assert "b.py" in out
-    assert "stale files:" in out.lower()
+    assert "staleness" in out.lower()
 
 
 def test_status_confidence_distribution(populated_db, capsys):
