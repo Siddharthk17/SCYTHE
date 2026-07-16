@@ -39,7 +39,7 @@ def run_init(repo_root: Path) -> None:
     parseable = discover_parseable_files(repo_root)
 
     # 5. Run reindexing pipeline
-    parse_error_count = run_reindex_pipeline(conn, repo_root, parseable)
+    parse_error_count, parse_error_paths = run_reindex_pipeline(conn, repo_root, parseable)
 
     # 6. Directories pass
     now = current_timestamp()
@@ -83,6 +83,9 @@ def run_init(repo_root: Path) -> None:
     print(f"  {len(parseable)} files parsed ({parsed_lang_str})")
     print(f"  {skipped_count} files skipped (unsupported extension)")
     print(f"  {parse_error_count} files with parse errors")
+    if parse_error_paths:
+        for err_path in parse_error_paths:
+            print(f"      - {err_path}")
     print(f"  {function_count} functions extracted")
     print(f"  {import_edges_count} import edges resolved")
     print(f"  {call_edges_count} call graph edges ({ambiguous_calls} ambiguous, {unresolved_calls} unresolved)")

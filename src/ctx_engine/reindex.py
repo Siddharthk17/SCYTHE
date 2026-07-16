@@ -267,6 +267,7 @@ def run_reindex_pipeline(
     all_removed_funcs_snapshots = []
     reindexed_extractions = {}
     parse_error_count = 0
+    parse_error_paths: list[str] = []
 
     for path, language in files_to_reindex.items():
         c_ids, r_snapshots, ext_data, has_parse_errors = reindex_file(conn, repo_root, path, language)
@@ -275,6 +276,7 @@ def run_reindex_pipeline(
         reindexed_extractions[path] = ext_data
         if has_parse_errors:
             parse_error_count += 1
+            parse_error_paths.append(path)
 
     # PASS 2: Import Graph Rebuild
     db_files = [row["path"] for row in conn.execute("SELECT path FROM files").fetchall()]
@@ -443,4 +445,4 @@ def run_reindex_pipeline(
     for rid, snapshot_callers in all_removed_funcs_snapshots:
         propagate_taint(conn, rid, caller_snapshot=snapshot_callers)
 
-    return parse_error_count
+    return parse_error_count, parse_error_paths

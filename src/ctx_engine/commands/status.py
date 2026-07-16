@@ -49,8 +49,8 @@ def run_status(repo_root: Path) -> None:
     conn.execute("SELECT path FROM files WHERE is_stale = 1;").fetchall()
 
     # 5. call_graph unresolved and ambiguous count
-    conn.execute("SELECT count(*) FROM call_graph WHERE callee_id IS NULL;").fetchone()[0]
-    conn.execute("SELECT count(*) FROM call_graph WHERE is_ambiguous = 1;").fetchone()[0]
+    unresolved_count = conn.execute("SELECT count(*) FROM call_graph WHERE callee_id IS NULL;").fetchone()[0]
+    ambiguous_count = conn.execute("SELECT count(*) FROM call_graph WHERE is_ambiguous = 1;").fetchone()[0]
 
     # 6. FTS5 availability
     fts_available = True
@@ -92,6 +92,10 @@ def run_status(repo_root: Path) -> None:
     print("  tables:")
     for table, count in counts.items():
         print(f"    {table:13}: {count}")
+    print()
+    print(f"  call graph:")
+    print(f"    unresolved    : {unresolved_count}")
+    print(f"    ambiguous     : {ambiguous_count}")
     print()
     print("  files by language:")
     if lang_counts:
