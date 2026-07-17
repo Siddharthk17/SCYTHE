@@ -30,7 +30,6 @@ def run_sync(repo_root: Path, dry_run: bool = False) -> None:
 
     # ── Phase 1: Reindex ──────────────────────────────────────────────────
     conn = connect(db_path)
-    conn.row_factory = None
 
     parseable = discover_parseable_files(repo_root)
 
@@ -61,14 +60,12 @@ def run_sync(repo_root: Path, dry_run: bool = False) -> None:
     if parse_error_count:
         print(f"    {parse_error_count} files with parse errors")
 
-    conn.row_factory = None
     conn.close()
 
     # ── Phase 2: Summarize ────────────────────────────────────────────────
     print()
 
     conn = connect(db_path)
-    conn.row_factory = sqlite3.Row
 
     files_data, total_funcs_needing_summary, batches = get_summarize_selection(
         conn, repo_root, force=False
@@ -143,7 +140,6 @@ def run_sync(repo_root: Path, dry_run: bool = False) -> None:
 
         print()
 
-    conn.row_factory = None
     conn.close()
 
     if not dry_run and files_data:

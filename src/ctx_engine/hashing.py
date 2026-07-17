@@ -6,8 +6,9 @@ from tree_sitter import Node, Tree
 def unescape_string(text: str) -> str:
     """Unescape standard backslash escape sequences in a string literal."""
     try:
-        return codecs.escape_decode(text.encode("utf-8"))[0].decode("utf-8")
-    except Exception:
+        raw = text.encode("utf-8")
+        return codecs.escape_decode(raw)[0].decode("utf-8")
+    except (LookupError, ValueError, UnicodeDecodeError, TypeError):
         return text
 
 def normalize_string_literal(text: str) -> str:
@@ -102,7 +103,10 @@ def canonicalize(node: Node, source: bytes, language: str) -> list[str]:
             return
 
         if n.child_count == 0:
-            text = n.text.decode("utf-8")
+            try:
+                text = n.text.decode("utf-8")
+            except (UnicodeDecodeError, AttributeError):
+                text = ""
             if n.type == "string" or n.type.endswith("string_literal"):
                 text = normalize_string_literal(text)
             tokens.append(f"{n.type}:{text}")

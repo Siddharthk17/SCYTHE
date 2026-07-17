@@ -22,8 +22,12 @@ def collect_calls_in_subtree(node: Node, language: str) -> list[tuple[str, str |
             receiver = n.child_by_field_name("value")
             method = n.child_by_field_name("name")
             if method:
+                try:
+                    method_text = method.text.decode("utf-8")
+                except (UnicodeDecodeError, AttributeError):
+                    method_text = ""
                 receiver_text = receiver.text.decode("utf-8") if receiver else None
-                calls.append((method.text.decode("utf-8"), receiver_text))
+                calls.append((method_text, receiver_text))
 
         if is_call and callee_node:
             obj_node = None
@@ -43,9 +47,20 @@ def collect_calls_in_subtree(node: Node, language: str) -> list[tuple[str, str |
                 prop_node = callee_node.child_by_field_name("field")
 
             if obj_node and prop_node:
-                calls.append((prop_node.text.decode("utf-8"), obj_node.text.decode("utf-8")))
+                try:
+                    prop_text = prop_node.text.decode("utf-8")
+                except (UnicodeDecodeError, AttributeError):
+                    prop_text = ""
+                try:
+                    obj_text = obj_node.text.decode("utf-8")
+                except (UnicodeDecodeError, AttributeError):
+                    obj_text = ""
+                calls.append((prop_text, obj_text))
             else:
-                text = callee_node.text.decode("utf-8")
+                try:
+                    text = callee_node.text.decode("utf-8")
+                except (UnicodeDecodeError, AttributeError):
+                    text = ""
                 if "::" in text:
                     parts = text.rsplit("::", 1)
                     calls.append((parts[1], parts[0]))

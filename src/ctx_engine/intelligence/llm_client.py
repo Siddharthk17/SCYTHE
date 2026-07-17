@@ -8,6 +8,13 @@ import sqlite3
 from datetime import datetime, timezone
 import anthropic
 
+# Optional .env loading for ANTHROPIC_API_KEY
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 logger = logging.getLogger("ctx")
 
 SYSTEM_INSTRUCTION = (

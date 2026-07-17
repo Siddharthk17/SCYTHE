@@ -44,7 +44,8 @@ def get_taint_warning(conn: sqlite3.Connection, taint_source_id: str) -> str:
 def get_summarize_selection(
     conn: sqlite3.Connection,
     repo_root: Path,
-    force: bool = False
+    force: bool = False,
+    batch_size: int = 20,
 ) -> tuple[list[dict], int, list[list[dict]]]:
     """Build file payloads for summarization selection.
 
@@ -106,7 +107,7 @@ def get_summarize_selection(
             "functions": funcs_payload
         })
 
-    batches = batch_files(files_data, max_files_per_batch=20)
+    batches = batch_files(files_data, max_files_per_batch=batch_size)
     return files_data, total_funcs_needing_summary, batches
 
 
@@ -124,7 +125,7 @@ def run_summarize(
     conn = connect(db_path)
     conn.row_factory = sqlite3.Row
 
-    files_data, total_funcs_needing_summary, batches = get_summarize_selection(conn, repo_root, force)
+    files_data, total_funcs_needing_summary, batches = get_summarize_selection(conn, repo_root, force, batch_size)
 
     if not files_data:
         print("No files need summarization.")

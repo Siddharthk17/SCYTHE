@@ -58,6 +58,7 @@ def run_log_commit(repo_root: Path, commit_hash: str = "HEAD") -> None:
         for file_path in changed_files:
             if not file_path:
                 continue
+            before = conn.total_changes
             conn.execute(
                 """
                 INSERT INTO changes (file, commit_hash, summary, author, timestamp)
@@ -66,7 +67,7 @@ def run_log_commit(repo_root: Path, commit_hash: str = "HEAD") -> None:
                 """,
                 (file_path, resolved_hash, subject, now),
             )
-            if conn.total_changes > inserted:
+            if conn.total_changes > before:
                 inserted += 1
 
             conn.execute(

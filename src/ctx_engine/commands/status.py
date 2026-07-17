@@ -25,8 +25,7 @@ def run_status(repo_root: Path) -> None:
 
     conn = connect(db_path)
 
-    # 1. Get journal mode
-    conn.execute("PRAGMA journal_mode;").fetchone()[0]
+    # 1. WAL mode is enabled on connect — journal mode is always WAL
 
     # 2. Get table row counts
     tables = [
@@ -45,10 +44,7 @@ def run_status(repo_root: Path) -> None:
         lang = EXTENSION_TO_LANGUAGE.get(ext, "unknown")
         lang_counts[lang] = lang_counts.get(lang, 0) + 1
 
-    # 4. List of files where is_stale = 1
-    conn.execute("SELECT path FROM files WHERE is_stale = 1;").fetchall()
-
-    # 5. call_graph unresolved and ambiguous count
+    # 4. call_graph unresolved and ambiguous count
     unresolved_count = conn.execute("SELECT count(*) FROM call_graph WHERE callee_id IS NULL;").fetchone()[0]
     ambiguous_count = conn.execute("SELECT count(*) FROM call_graph WHERE is_ambiguous = 1;").fetchone()[0]
 

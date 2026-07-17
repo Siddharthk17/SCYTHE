@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,7 +25,6 @@ def _write_hook_safe(hook_path: Path, content: str, hook_label: str, git_dir: Pa
 
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
         backup_path = git_dir / "hooks" / f"{hook_path.name}.ctx-backup.{timestamp}"
-        import shutil
         shutil.copy2(str(hook_path), str(backup_path))
         print(
             f"  WARNING: existing {hook_label} hook backed up to:"

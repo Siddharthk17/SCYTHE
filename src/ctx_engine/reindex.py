@@ -259,9 +259,13 @@ def run_reindex_pipeline(
     conn: sqlite3.Connection,
     repo_root: Path,
     files_to_reindex: dict[str, str]
-) -> int:
-    """Run the 4-pass reindexing pipeline for the specified files. Returns the number of files with parse errors."""
+) -> tuple[int, list[str]]:
+    """Run the 4-pass reindexing pipeline for the specified files.
+
+    Returns (parse_error_count, parse_error_paths).
+    """
     conn.row_factory = sqlite3.Row
+    now = datetime.now(timezone.utc).isoformat()
     # PASS 1: Extract & Hash Compare
     all_changed_func_ids = set()
     all_removed_funcs_snapshots = []
@@ -334,10 +338,11 @@ def run_reindex_pipeline(
                 UPDATE files SET
                     imports = ?,
                     used_by = ?,
-                    used_by_count = ?
+                    used_by_count = ?,
+                    updated_at = ?
                 WHERE path = ?
                 """,
-                (json.dumps(imps), json.dumps(ub), len(ub), p)
+                (json.dumps(imps), json.dumps(ub), len(ub), now, p)
             )
 
     # PASS 3: Call Graph Rebuild

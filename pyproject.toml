@@ -20,6 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+dotenv = ["python-dotenv>=1.0"]
 
 [project.scripts]
 ctx = "ctx_engine.cli:main"

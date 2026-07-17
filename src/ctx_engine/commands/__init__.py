@@ -4,6 +4,8 @@ from ctx_engine.commands.validate import run_validate
 from ctx_engine.commands.log_commit import run_log_commit
 from ctx_engine.commands.install_hooks import run_install_hooks
 from ctx_engine.commands.sync import run_sync
+from ctx_engine.commands.summarize import run_summarize
+from ctx_engine.commands.update import run_update
 
 __all__ = [
     "run_init",
@@ -12,4 +14,6 @@ __all__ = [
     "run_log_commit",
     "run_install_hooks",
     "run_sync",
+    "run_summarize",
+    "run_update",
 ]

@@ -1,11 +1,12 @@
 import click
 from pathlib import Path
+from ctx_engine import __version__
 from ctx_engine.commands import run_init, run_status
 
-@click.group()
+@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+@click.version_option(version=__version__, prog_name="ctx")
 def main() -> None:
-    """ctx — Codebase context engine CLI."""
-    pass
+    """ctx — Auto-updating codebase context engine."""
 
 @main.command(name="init")
 @click.option(
