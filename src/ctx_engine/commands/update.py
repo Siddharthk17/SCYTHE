@@ -1,5 +1,3 @@
-# update command implementation for ctx.
-
 import json
 import logging
 import sqlite3
@@ -20,6 +18,7 @@ from ctx_engine.intelligence.llm_client import (
 
 logger = logging.getLogger("ctx")
 
+
 def run_update(repo_root: Path, file_path_str: str) -> None:
     """Reindex and unconditionally summarize a single file, displaying before/after diffs."""
     db_path = repo_root / ".ctx" / "index.db"
@@ -29,12 +28,18 @@ def run_update(repo_root: Path, file_path_str: str) -> None:
     conn = connect(db_path)
     conn.row_factory = sqlite3.Row
 
-    # Find the file in database to verify it was indexed
-    # Paths in database are relative, so normalize file_path_str to repo-relative
-    try:
-        relative_path = Path(file_path_str).relative_to(repo_root).as_posix()
-    except ValueError:
-        relative_path = Path(file_path_str).as_posix()
+    repo_root_resolved = repo_root.resolve()
+    candidate = Path(file_path_str)
+    if candidate.is_absolute():
+        candidate_resolved = candidate.resolve()
+        try:
+            relative_path = candidate_resolved.relative_to(repo_root_resolved).as_posix()
+        except ValueError:
+            click.echo(f"Error: {file_path_str} is outside the repository root ({repo_root})", err=True)
+            conn.close()
+            raise click.Abort()
+    else:
+        relative_path = candidate.as_posix()
 
     file_row = conn.execute("SELECT path, purpose, summary FROM files WHERE path = ?", (relative_path,)).fetchone()
     if not file_row:
@@ -42,16 +47,14 @@ def run_update(repo_root: Path, file_path_str: str) -> None:
         conn.close()
         raise click.Abort()
 
-    # Capture old metadata for diff
     old_purpose = file_row["purpose"]
-    
-    old_funcs = {
+
+    old_funcs: dict[str, str | None] = {
         row["id"]: row["summary"] for row in conn.execute(
             "SELECT id, summary FROM functions WHERE file = ?", (relative_path,)
         ).fetchall()
     }
 
-    # Step 1: Reindex the file
     ext = Path(relative_path).suffix
     language = EXTENSION_TO_LANGUAGE.get(ext)
     if not language:
@@ -59,9 +62,10 @@ def run_update(repo_root: Path, file_path_str: str) -> None:
         conn.close()
         raise click.Abort()
 
-    run_reindex_pipeline(conn, repo_root, {relative_path: language})
+    parse_error_count, parse_error_paths, _ = run_reindex_pipeline(conn, repo_root, {relative_path: language})
+    if parse_error_count > 0:
+        logger.warning("Update for %s encountered %d parse error(s) in file", relative_path, parse_error_count)
 
-    # Re-fetch new file and function structures after reindex (line ranges might have shifted)
     refreshed_file = conn.execute(
         "SELECT path, purpose, summary, danger, exports, imports, used_by_count FROM files WHERE path = ?",
         (relative_path,)
@@ -71,9 +75,7 @@ def run_update(repo_root: Path, file_path_str: str) -> None:
         (relative_path,)
     ).fetchall()
 
-    # Step 2: Unconditionally Summarize
-    # Build payload with needs_summary=True for ALL functions
-    funcs_payload = []
+    funcs_payload: list[dict] = []
     for func_row in refreshed_funcs:
         func_id = func_row["id"]
         funcs_payload.append({
@@ -88,6 +90,7 @@ def run_update(repo_root: Path, file_path_str: str) -> None:
 
     file_payload = {
         "path": relative_path,
+        "purpose_needs_update": True,
         "exports": json.loads(refreshed_file["exports"]) if refreshed_file["exports"] else [],
         "imports": json.loads(refreshed_file["imports"]) if refreshed_file["imports"] else [],
         "used_by_count": refreshed_file["used_by_count"],
@@ -97,17 +100,15 @@ def run_update(repo_root: Path, file_path_str: str) -> None:
 
     client = get_anthropic_client()
     model = get_model_name()
-    
+
     user_content = json.dumps([file_payload])
     response_text, _, _ = call_llm_with_retry(client, model, SYSTEM_INSTRUCTION, user_content)
     parsed_results = parse_response(response_text)
-    
-    # Apply summary
+
     apply_summary_batch(conn, parsed_results)
 
-    # Fetch new values for diff
     new_file_row = conn.execute("SELECT purpose, summary FROM files WHERE path = ?", (relative_path,)).fetchone()
-    new_funcs = {
+    new_funcs: dict[str, str | None] = {
         row["id"]: row["summary"] for row in conn.execute(
             "SELECT id, summary FROM functions WHERE file = ?", (relative_path,)
         ).fetchall()
@@ -115,7 +116,6 @@ def run_update(repo_root: Path, file_path_str: str) -> None:
 
     conn.close()
 
-    # Step 3: Print before/after diff
     print(f"ctx update — {relative_path}")
     print()
     print("  purpose:")
@@ -123,12 +123,10 @@ def run_update(repo_root: Path, file_path_str: str) -> None:
     print(f"    + {new_file_row['purpose'] or '(none)'}")
     print()
 
-    # Group functions by name
     for func_id, new_sum in new_funcs.items():
-        # Get function name from ID
         func_name = func_id.split("::", 1)[1]
         old_sum = old_funcs.get(func_id)
-        
+
         print(f"  {func_name}:")
         if old_sum == new_sum:
             print("    (unchanged)")

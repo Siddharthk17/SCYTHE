@@ -17,7 +17,11 @@ def main() -> None:
 )
 def init_cmd(repo_root: Path) -> None:
     """Initialize or update the codebase index database."""
-    run_init(repo_root.resolve())
+    try:
+        run_init(repo_root.resolve())
+    except (FileNotFoundError, ValueError) as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
 
 @main.command(name="status")
 @click.option(

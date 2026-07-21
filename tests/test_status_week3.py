@@ -76,6 +76,25 @@ def test_status_shows_wal_mode(tmp_path, capsys):
     assert "WAL mode" in out
 
 
+def test_status_hook_not_installed(status_repo, capsys):
+    """Missing hook file -> NOT INSTALLED."""
+    (status_repo / ".git" / "hooks" / "pre-commit").unlink()
+    run_status(status_repo)
+    out = capsys.readouterr().out
+    assert "pre-commit" in out
+    assert "NOT INSTALLED" in out
+
+
+def test_status_hook_modified(status_repo, capsys):
+    """Hook with different content -> MODIFIED."""
+    (status_repo / ".git" / "hooks" / "pre-commit").write_text("#!/bin/sh\necho custom\n")
+    (status_repo / ".git" / "hooks" / "pre-commit").chmod(0o755)
+    run_status(status_repo)
+    out = capsys.readouterr().out
+    assert "pre-commit" in out
+    assert "MODIFIED" in out
+
+
 def test_status_no_changes_section(tmp_path, capsys):
     """No records in changes table -> 'none' message."""
     subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)

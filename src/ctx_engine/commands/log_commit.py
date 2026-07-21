@@ -9,6 +9,10 @@ logger = logging.getLogger("ctx")
 
 
 def get_commit_metadata(repo_root: Path, commit_hash: str) -> tuple[str, list[str]]:
+    """Return (subject, changed_files) for a given commit hash."""
+    if not commit_hash or not commit_hash.strip():
+        raise ValueError("Commit hash must not be empty")
+
     subject = subprocess.run(
         ["git", "log", "--format=%s", "-1", commit_hash],
         cwd=repo_root, capture_output=True, text=True,
@@ -26,13 +30,13 @@ def get_commit_metadata(repo_root: Path, commit_hash: str) -> tuple[str, list[st
 
 
 def run_log_commit(repo_root: Path, commit_hash: str = "HEAD") -> None:
+    """Record commit metadata in the changes table."""
     db_path = repo_root / ".ctx" / "index.db"
     if not db_path.exists():
         raise FileNotFoundError(
             "Run 'ctx init' first — .ctx/index.db does not exist."
         )
 
-    # Resolve ref (e.g., HEAD) to the concrete full-length SHA
     result = subprocess.run(
         ["git", "rev-parse", commit_hash],
         cwd=repo_root, capture_output=True, text=True,

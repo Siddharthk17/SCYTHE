@@ -1,5 +1,3 @@
-# init command implementation for ctx.
-
 import json
 import logging
 from collections import Counter
@@ -16,32 +14,28 @@ from ctx_engine.reindex import run_reindex_pipeline
 
 logger = logging.getLogger("ctx")
 
+
 def current_timestamp() -> str:
     """Return the current timezone-aware UTC timestamp in ISO 8601 format."""
     return datetime.now(timezone.utc).isoformat()
 
+
 def run_init(repo_root: Path) -> None:
     """Run the complete initialization and indexing flow for the repository."""
-    # 1. Assert inside a Git repo
     assert_inside_git_repo(repo_root)
 
-    # 2. Database path and directory creation
     ctx_dir = repo_root / ".ctx"
     ctx_dir.mkdir(exist_ok=True)
     db_path = ctx_dir / "index.db"
 
-    # 3. Connection and schema initialization
     conn = connect(db_path)
     init_schema(conn)
 
-    # 4. Discover files
     tracked = discover_all_tracked_paths(repo_root)
     parseable = discover_parseable_files(repo_root)
 
-    # 5. Run reindexing pipeline
-    parse_error_count, parse_error_paths = run_reindex_pipeline(conn, repo_root, parseable)
+    parse_error_count, parse_error_paths, _ = run_reindex_pipeline(conn, repo_root, parseable)
 
-    # 6. Directories pass
     now = current_timestamp()
     dir_counts = build_directory_counts(tracked)
     with conn:
@@ -55,9 +49,8 @@ def run_init(repo_root: Path) -> None:
                 (dir_path, count, now)
             )
 
-    # 7. Collect database counts for report
     function_count = conn.execute("SELECT count(*) FROM functions").fetchone()[0]
-    
+
     import_edges_count = 0
     for row in conn.execute("SELECT imports FROM files WHERE imports IS NOT NULL").fetchall():
         try:
@@ -71,7 +64,6 @@ def run_init(repo_root: Path) -> None:
 
     conn.close()
 
-    # 8. Print summary report
     repo_name = repo_root.name
     language_counts = Counter(parseable.values())
     parsed_lang_str = ", ".join(f"{lang}: {count}" for lang, count in sorted(language_counts.items()))

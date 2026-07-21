@@ -166,6 +166,19 @@ def sub(a, b):
         conn.close()
 
 
+def test_reindex_file_not_found(temp_repo):
+    """Verify reindex_file gracefully handles a deleted file instead of crashing."""
+    conn = _with_db(temp_repo)
+    try:
+        result = reindex_file(conn, temp_repo, "nonexistent.py", "python")
+        changed_ids, removed_snapshots, ext_data, has_errors = result
+        assert changed_ids == set()
+        assert removed_snapshots == []
+        assert ext_data["exports"] == []
+        assert has_errors is False
+    finally:
+        conn.close()
+
 def test_reindex_reformatting_invariance(temp_repo):
     """Change whitespace and quotes -> semantic hashes match, stale stays 0, confidence stays 1.0."""
     conn = _with_db(temp_repo)

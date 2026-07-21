@@ -1,9 +1,10 @@
 import pytest
 import sqlite3
 import json
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 from ctx_engine.db import init_schema
-from ctx_engine.commands.summarize import run_summarize
+from ctx_engine.commands.summarize import run_summarize, get_function_source
 
 
 @pytest.fixture
@@ -25,6 +26,33 @@ def mock_db(tmp_path):
     conn.close()
     return tmp_path
 
+
+def test_get_function_source_normal(tmp_path):
+    """Verify get_function_source extracts correct line range."""
+    f = tmp_path / "test.py"
+    f.write_text("line1\nline2\nline3\nline4\nline5\n")
+    assert get_function_source(f, 2, 4) == "line2\nline3\nline4"
+
+def test_get_function_source_missing_file(tmp_path):
+    """Verify get_function_source returns '' for non-existent file."""
+    result = get_function_source(tmp_path / "nonexistent.py", 1, 10)
+    assert result == ""
+
+def test_get_function_source_permission_error(tmp_path):
+    """Verify get_function_source returns '' for unreadable file."""
+    f = tmp_path / "secret.py"
+    f.write_text("hidden")
+    f.chmod(0o000)
+    result = get_function_source(f, 1, 1)
+    assert result == ""
+    f.chmod(0o644)
+
+def test_run_summarize_invalid_batch_size(mock_db):
+    """Verify run_summarize rejects batch_size < 1."""
+    with pytest.raises(ValueError, match="batch_size must be >= 1"):
+        run_summarize(mock_db, batch_size=0)
+    with pytest.raises(ValueError, match="batch_size must be >= 1"):
+        run_summarize(mock_db, batch_size=-5)
 
 @patch("ctx_engine.commands.summarize.connect")
 def test_summarize_dry_run(mock_connect, mock_db):

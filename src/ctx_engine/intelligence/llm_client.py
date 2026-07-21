@@ -1,5 +1,3 @@
-# LLM Client integration using the Anthropic API.
-
 import json
 import logging
 import os
@@ -8,7 +6,6 @@ import sqlite3
 from datetime import datetime, timezone
 import anthropic
 
-# Optional .env loading for ANTHROPIC_API_KEY
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -17,7 +14,7 @@ except ImportError:
 
 logger = logging.getLogger("ctx")
 
-SYSTEM_INSTRUCTION = (
+SYSTEM_INSTRUCTION: str = (
     "You are a technical codebase context generator. For each file in the input JSON, produce a response adhering strictly to the schema rules.\n\n"
     "File-level rules:\n"
     "- purpose: one sentence, what the file does and why it exists.\n"
@@ -42,8 +39,8 @@ def get_anthropic_client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=api_key)
 
 def get_model_name() -> str:
-    """Get the model name from CTX_LLM_MODEL environment variable or default to claude-3-5-haiku-20241022."""
-    return os.environ.get("CTX_LLM_MODEL", "claude-3-5-haiku-20241022")
+    """Get the model name from CTX_LLM_MODEL environment variable or default to claude-haiku-4-5-20251001."""
+    return os.environ.get("CTX_LLM_MODEL", "claude-haiku-4-5-20251001")
 
 def call_llm_with_retry(
     client: anthropic.Anthropic,
@@ -51,7 +48,11 @@ def call_llm_with_retry(
     system_prompt: str,
     user_content: str
 ) -> tuple[str, int, int]:
-    """Call the Anthropic API with retry and exponential backoff on transient errors."""
+    """Call the Anthropic API with retry and exponential backoff on transient errors.
+
+    Returns (response_text, input_tokens, output_tokens).
+    Raises the last error if all retry attempts fail.
+    """
     attempts = 3
     delay = 2
     for attempt in range(attempts):
@@ -66,19 +67,16 @@ def call_llm_with_retry(
             )
             input_tokens = message.usage.input_tokens
             output_tokens = message.usage.output_tokens
-            
+
             response_text = ""
             for block in message.content:
                 if block.type == "text":
                     response_text += block.text
             return response_text, input_tokens, output_tokens
         except Exception as e:
-            # Identify transient errors (429, 5xx)
-            is_transient = False
             status_code = getattr(e, "status_code", None)
-            if status_code in (429, 500, 502, 503, 504) or isinstance(e, (anthropic.RateLimitError, anthropic.InternalServerError)):
-                is_transient = True
-                
+            is_transient = status_code in (429, 500, 502, 503, 504) or isinstance(e, (anthropic.RateLimitError, anthropic.InternalServerError))
+
             if is_transient and attempt < attempts - 1:
                 logger.warning(
                     "Anthropic API call failed (attempt %d/%d): %s. Retrying in %ds...",
@@ -87,11 +85,17 @@ def call_llm_with_retry(
                 time.sleep(delay)
                 delay *= 2
             else:
-                raise e
+                raise
     raise RuntimeError("Failed to call Anthropic API after max retries")
 
 def parse_response(text: str) -> list[dict]:
-    """Defensively clean and parse the JSON array response from the model."""
+    """Defensively clean and parse the JSON array response from the model.
+
+    Raises ValueError if the response is empty, contains only fence markers,
+    or is not a JSON array.
+    """
+    if not text or not text.strip():
+        raise ValueError("Empty response from LLM — no content received")
     cleaned = text.strip()
     if cleaned.startswith("```"):
         cleaned = cleaned.split("\n", 1)[1]
@@ -102,7 +106,12 @@ def parse_response(text: str) -> list[dict]:
         else:
             cleaned = cleaned[4:]
     cleaned = cleaned.strip()
-    return json.loads(cleaned)
+    if not cleaned:
+        raise ValueError("Response contained only fence markers — no JSON content")
+    result = json.loads(cleaned)
+    if not isinstance(result, list):
+        raise ValueError(f"Expected JSON array from LLM, got {type(result).__name__}")
+    return result
 
 def batch_files(
     files_data: list[dict],
@@ -110,8 +119,10 @@ def batch_files(
     max_tokens_per_batch: int = 50000
 ) -> list[list[dict]]:
     """Group file payloads into batches bounded by file count and estimated input token count."""
+    if max_files_per_batch < 1:
+        raise ValueError(f"max_files_per_batch must be >= 1, got {max_files_per_batch}")
     batches = []
-    current_batch = []
+    current_batch: list[dict] = []
     current_tokens = 0
     for f in files_data:
         f_text = json.dumps(f)
@@ -128,7 +139,10 @@ def batch_files(
     return batches
 
 def apply_summary_batch(conn: sqlite3.Connection, parsed_results: list[dict]) -> tuple[int, int]:
-    """Apply the parsed summary results to the database and clean up taint queue."""
+    """Apply the parsed summary results to the database and clean up taint queue.
+
+    Returns (files_updated, functions_updated).
+    """
     files_updated = 0
     functions_updated = 0
     now = datetime.now(timezone.utc).isoformat()
@@ -136,15 +150,15 @@ def apply_summary_batch(conn: sqlite3.Connection, parsed_results: list[dict]) ->
         for file_obj in parsed_results:
             path = file_obj.get("path")
             purpose_needs_update = file_obj.get("purpose_needs_update", True)
-            
+
             if not path:
                 continue
-            
+
             if purpose_needs_update:
                 purpose = file_obj.get("purpose")
                 summary = file_obj.get("summary")
                 danger = file_obj.get("danger")
-                
+
                 conn.execute(
                     """
                     UPDATE files
@@ -154,16 +168,16 @@ def apply_summary_batch(conn: sqlite3.Connection, parsed_results: list[dict]) ->
                     (purpose, summary, danger, now, path)
                 )
                 files_updated += 1
-            
+
             for func_obj in file_obj.get("functions", []):
                 func_id = func_obj.get("id")
                 f_summary = func_obj.get("summary")
                 f_summary_long = func_obj.get("summary_long")
                 f_danger = func_obj.get("danger")
-                
+
                 if not func_id:
                     continue
-                    
+
                 conn.execute(
                     """
                     UPDATE functions

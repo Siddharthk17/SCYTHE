@@ -8,7 +8,14 @@ def propagate_taint(
     source_id: str,
     caller_snapshot: list[str] | None = None,
 ) -> None:
-    """Propagate taint to all functions calling the changed or removed source function."""
+    """Propagate taint to all functions calling the changed or removed source function.
+
+    Args:
+        conn: Open database connection.
+        source_id: Function ID of the changed/removed function.
+        caller_snapshot: Pre-captured list of caller IDs. When None, callers are
+            queried from call_graph where callee_id == source_id.
+    """
     if caller_snapshot is not None:
         callers = caller_snapshot
     else:
@@ -20,7 +27,6 @@ def propagate_taint(
 
     now = datetime.now(timezone.utc).isoformat()
     for caller_id in callers:
-        # Priority is the caller's own fan-in (how many functions call caller_id)
         fanin = conn.execute(
             "SELECT COUNT(*) FROM call_graph WHERE callee_id = ?", (caller_id,)
         ).fetchone()[0]

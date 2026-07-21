@@ -1,4 +1,6 @@
 import logging
+import json
+import sqlite3
 from pathlib import Path
 from ctx_engine.db import connect
 from ctx_engine.discovery import discover_parseable_files
@@ -12,13 +14,12 @@ from ctx_engine.intelligence.llm_client import (
     apply_summary_batch,
     SYSTEM_INSTRUCTION,
 )
-import json
-import sqlite3
 
 logger = logging.getLogger("ctx")
 
 
 def run_sync(repo_root: Path, dry_run: bool = False) -> None:
+    """Reindex and re-summarize — make everything fresh."""
     db_path = repo_root / ".ctx" / "index.db"
     if not db_path.exists():
         raise FileNotFoundError(
@@ -28,17 +29,14 @@ def run_sync(repo_root: Path, dry_run: bool = False) -> None:
     print("ctx sync")
     print()
 
-    # ── Phase 1: Reindex ──────────────────────────────────────────────────
     conn = connect(db_path)
-
     parseable = discover_parseable_files(repo_root)
 
-    # Snapshot stale/taint counts before reindex
     before = conn.execute("SELECT COUNT(*) FROM files WHERE is_stale = 1").fetchone()[0]
     before_taint = conn.execute("SELECT COUNT(*) FROM functions WHERE is_tainted = 1").fetchone()[0]
     before_stale_funcs = conn.execute("SELECT COUNT(*) FROM functions WHERE is_stale = 1").fetchone()[0]
 
-    parse_error_count = run_reindex_pipeline(conn, repo_root, parseable)
+    parse_error_count, parse_error_paths, changed_func_ids = run_reindex_pipeline(conn, repo_root, parseable)
 
     after = conn.execute("SELECT COUNT(*) FROM files WHERE is_stale = 1").fetchone()[0]
     after_taint = conn.execute("SELECT COUNT(*) FROM functions WHERE is_tainted = 1").fetchone()[0]
@@ -57,18 +55,21 @@ def run_sync(repo_root: Path, dry_run: bool = False) -> None:
     else:
         print("    No files changed.")
     print(f"    ({unchanged} files unchanged — hashes matched, metadata preserved)")
-    if parse_error_count:
-        print(f"    {parse_error_count} files with parse errors")
+    if parse_error_count > 0:
+        print(f"    {parse_error_count} file(s) with parse errors:")
+        for err_path in parse_error_paths:
+            print(f"      - {err_path}")
 
-    conn.close()
-
-    # ── Phase 2: Summarize ────────────────────────────────────────────────
     print()
 
-    conn = connect(db_path)
+    changed_files: set[str] = set()
+    for fid in changed_func_ids:
+        if "::" in fid:
+            file_part = fid.split("::", 1)[0]
+            changed_files.add(file_part)
 
     files_data, total_funcs_needing_summary, batches = get_summarize_selection(
-        conn, repo_root, force=False
+        conn, repo_root, force=False, path_filter=changed_files if changed_files else None
     )
 
     if not files_data:

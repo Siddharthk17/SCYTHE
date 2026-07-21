@@ -2,7 +2,7 @@ import subprocess
 from pathlib import Path
 
 # Map of file extensions to their corresponding tree-sitter language keys.
-EXTENSION_TO_LANGUAGE = {
+EXTENSION_TO_LANGUAGE: dict[str, str] = {
     ".py": "python",
     ".js": "javascript",
     ".jsx": "javascript",
@@ -18,7 +18,7 @@ EXTENSION_TO_LANGUAGE = {
 
 def assert_inside_git_repo(repo_root: Path) -> None:
     """Check if the given directory is inside a Git repository work tree.
-    
+
     Raises:
         ValueError: If the directory is not a Git repository.
     """
@@ -36,7 +36,11 @@ def assert_inside_git_repo(repo_root: Path) -> None:
         raise ValueError(f"Directory {repo_root} is not inside a git repository.") from err
 
 def discover_all_tracked_paths(repo_root: Path) -> list[str]:
-    """Return all git-tracked and untracked-but-not-ignored file paths, relative to repo root."""
+    """Return all git-tracked and untracked-but-not-ignored file paths, relative to repo root.
+
+    Raises:
+        RuntimeError: If git ls-files fails.
+    """
     try:
         result = subprocess.run(
             ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
@@ -51,12 +55,12 @@ def discover_all_tracked_paths(repo_root: Path) -> list[str]:
 
 def discover_parseable_files(repo_root: Path) -> dict[str, str]:
     """Filter discover_all_tracked_paths by supported file extension.
-    
+
     Returns:
         A dict mapping repo-relative paths to their tree-sitter language string.
     """
     all_paths = discover_all_tracked_paths(repo_root)
-    parseable_map = {}
+    parseable_map: dict[str, str] = {}
     for relative_path in all_paths:
         ext = Path(relative_path).suffix
         if ext in EXTENSION_TO_LANGUAGE:

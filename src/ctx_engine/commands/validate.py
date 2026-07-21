@@ -5,12 +5,13 @@ from pathlib import Path
 from ctx_engine.db import connect
 from ctx_engine.discovery import EXTENSION_TO_LANGUAGE
 from ctx_engine.languages.registry import get_parser
-from ctx_engine.hashing import file_semantic_hash
+from ctx_engine.hashing import file_semantic_hash, file_content_hash
 
 logger = logging.getLogger("ctx")
 
 
 def get_staged_blob(repo_root: Path, path: str) -> bytes | None:
+    """Return the git staged blob for path, or None if not staged."""
     result = subprocess.run(
         ["git", "show", f":0:{path}"],
         cwd=repo_root,
@@ -22,6 +23,7 @@ def get_staged_blob(repo_root: Path, path: str) -> bytes | None:
 
 
 def get_staged_paths(repo_root: Path) -> list[str]:
+    """Return staged file paths for added, copied, or modified files."""
     result = subprocess.run(
         ["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"],
         cwd=repo_root,
@@ -32,6 +34,11 @@ def get_staged_paths(repo_root: Path) -> list[str]:
 
 
 def run_validate(repo_root: Path, files: list[str] | None = None) -> None:
+    """Validate staged file content against the index.
+
+    When files is provided, validates those paths instead of auto-detecting staged files.
+    Raises SystemExit(1) if any stale or unindexed files are found.
+    """
     db_path = repo_root / ".ctx" / "index.db"
     if not db_path.exists():
         raise FileNotFoundError(
@@ -74,7 +81,7 @@ def run_validate(repo_root: Path, files: list[str] | None = None) -> None:
             continue
 
         file_row = conn.execute(
-            "SELECT semantic_hash FROM files WHERE path = ?", (staged_path,)
+            "SELECT semantic_hash, content_hash FROM files WHERE path = ?", (staged_path,)
         ).fetchone()
 
         blob = get_staged_blob(repo_root, staged_path)

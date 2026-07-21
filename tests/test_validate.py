@@ -138,6 +138,27 @@ def test_validate_no_db(tmp_path):
         run_validate(tmp_path)
 
 
+def test_validate_parse_error(validatable_repo, caplog):
+    """Syntax error in staged file -> warning logged, hash still compared."""
+    import logging
+    caplog.set_level(logging.WARNING)
+    db_path = validatable_repo / ".ctx" / "index.db"
+    source = "def add(a, b):\n    return a + b\n".encode()
+    s_hash = _compute_semantic_hash(source, ".py")
+    _commit_and_stage_lockstep(validatable_repo, "calc.py", source.decode(), db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE files SET semantic_hash = ? WHERE path = 'calc.py'", (s_hash,))
+    conn.commit()
+    conn.close()
+    # Stage content with syntax error
+    broken = "def add(a, b):\n    return a +  \n".encode()
+    (validatable_repo / "calc.py").write_bytes(broken)
+    subprocess.run(["git", "add", "calc.py"], cwd=validatable_repo, capture_output=True, check=True)
+    with pytest.raises(SystemExit):
+        run_validate(validatable_repo)
+    assert any("parse error" in rec.message.lower() for rec in caplog.records)
+
+
 def test_validate_not_in_git(tmp_path):
     """Outside a git repo -> clear error."""
     db_path = tmp_path / ".ctx" / "index.db"

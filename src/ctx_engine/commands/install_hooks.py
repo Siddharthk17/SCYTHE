@@ -7,16 +7,17 @@ from pathlib import Path
 
 logger = logging.getLogger("ctx")
 
-PRE_COMMIT_HOOK = """#!/bin/sh
+PRE_COMMIT_HOOK: str = """#!/bin/sh
 ctx validate --repo-root "$(git rev-parse --show-toplevel)"
 """
 
-POST_COMMIT_HOOK = """#!/bin/sh
+POST_COMMIT_HOOK: str = """#!/bin/sh
 ctx log-commit --repo-root "$(git rev-parse --show-toplevel)"
 """
 
 
 def _write_hook_safe(hook_path: Path, content: str, hook_label: str, git_dir: Path) -> bool:
+    """Install a hook file with backup of any existing hook. Returns True if written."""
     if hook_path.exists():
         existing = hook_path.read_text()
         if existing == content:
@@ -41,6 +42,7 @@ def _write_hook_safe(hook_path: Path, content: str, hook_label: str, git_dir: Pa
 
 
 def run_install_hooks(repo_root: Path) -> None:
+    """Install git hooks for commit-time validation and logging."""
     git_dir = repo_root / ".git"
 
     if not git_dir.is_dir():

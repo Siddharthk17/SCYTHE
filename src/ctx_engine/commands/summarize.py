@@ -1,5 +1,3 @@
-# summarize command implementation for ctx.
-
 import json
 import logging
 import sqlite3
@@ -17,16 +15,21 @@ from ctx_engine.intelligence.llm_client import (
 
 logger = logging.getLogger("ctx")
 
+
 def get_function_source(file_abspath: Path, line_start: int, line_end: int) -> str:
-    """Extract the raw lines of code for a function from the local file."""
+    """Extract the raw lines of code for a function from the local file.
+
+    Returns the source code string, or an empty string on any I/O error.
+    """
     try:
         lines = file_abspath.read_text(encoding="utf-8").splitlines()
-        # line_start and line_end are 1-indexed, inclusive
         return "\n".join(lines[line_start-1:line_end])
-    except Exception:
+    except (FileNotFoundError, PermissionError, OSError) as err:
+        logger.warning("Cannot read %s for source extraction: %s", file_abspath, err)
         return ""
 
-def get_taint_warning(conn: sqlite3.Connection, taint_source_id: str) -> str:
+
+def get_taint_warning(conn: sqlite3.Connection, taint_source_id: str | None) -> str:
     """Resolve the taint source function ID to a human-readable warning note."""
     if not taint_source_id:
         return "depends on a dependency that changed"
@@ -41,18 +44,38 @@ def get_taint_warning(conn: sqlite3.Connection, taint_source_id: str) -> str:
         return f"depends on {func_name}() in {file_name}, which changed"
     return f"depends on {taint_source_id}, which changed"
 
+
 def get_summarize_selection(
     conn: sqlite3.Connection,
     repo_root: Path,
     force: bool = False,
     batch_size: int = 20,
+    path_filter: set[str] | None = None,
 ) -> tuple[list[dict], int, list[list[dict]]]:
     """Build file payloads for summarization selection.
+
+    When path_filter is provided (from Phase 1's changed-file set),
+    use it instead of re-querying for stale/null-purpose files.
 
     Returns (files_data, total_funcs_needing_summary, batches).
     """
     if force:
         files_rows = conn.execute("SELECT path, purpose, summary, danger, exports, imports, used_by_count, is_stale FROM files;").fetchall()
+    elif path_filter is not None:
+        placeholders = ",".join("?" for _ in path_filter)
+        files_rows = conn.execute(
+            f"""
+            SELECT DISTINCT f.path, f.purpose, f.summary, f.danger, f.exports, f.imports, f.used_by_count, f.is_stale
+            FROM files f
+            WHERE f.path IN ({placeholders})
+               OR EXISTS (
+                   SELECT 1 FROM functions fn
+                   WHERE fn.file = f.path
+                     AND fn.is_tainted = 1
+               )
+            """,
+            list(path_filter)
+        ).fetchall()
     else:
         files_rows = conn.execute(
             """
@@ -68,7 +91,7 @@ def get_summarize_selection(
             """
         ).fetchall()
 
-    files_data = []
+    files_data: list[dict] = []
     total_funcs_needing_summary = 0
 
     for f_row in files_rows:
@@ -80,7 +103,7 @@ def get_summarize_selection(
             (path,)
         ).fetchall()
 
-        funcs_payload = []
+        funcs_payload: list[dict] = []
         for func_row in funcs_rows:
             needs_sum = force or func_row["is_stale"] == 1 or func_row["summary"] is None or (is_taint_only and func_row["is_tainted"] == 1)
 
@@ -118,6 +141,8 @@ def run_summarize(
     dry_run: bool = False
 ) -> None:
     """Perform bulk LLM summarization of files/functions needing updates."""
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
     db_path = repo_root / ".ctx" / "index.db"
     if not db_path.exists():
         raise FileNotFoundError("Database not found. Please run 'ctx init' first.")
@@ -132,7 +157,6 @@ def run_summarize(
         conn.close()
         return
 
-    # 3. Handle Dry Run
     if dry_run:
         total_chars_in = 0
         total_chars_out = 0
@@ -153,11 +177,10 @@ def run_summarize(
         conn.close()
         return
 
-    # 4. Actual execution
     client = get_anthropic_client()
     model = get_model_name()
 
-    skipped_files = []
+    skipped_files: list[str] = []
     total_files_updated = 0
     total_funcs_updated = 0
     total_in_tokens = 0

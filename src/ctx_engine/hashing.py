@@ -12,7 +12,9 @@ def unescape_string(text: str) -> str:
         return text
 
 def normalize_string_literal(text: str) -> str:
-    """Strip quote prefixes/boundaries and re-escape string contents to a canonical format."""
+    """Strip quote prefixes/boundaries and re-escape string contents to a canonical format.
+    Returns a valid JSON-encoded string literal.
+    """
     is_raw = False
     s = text
 

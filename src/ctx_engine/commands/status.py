@@ -1,5 +1,3 @@
-# status command implementation for ctx.
-
 import sqlite3
 from pathlib import Path
 from ctx_engine.db import connect
@@ -11,7 +9,10 @@ def _hook_status(git_dir: Path, name: str, expected_content: str) -> str:
     hook_path = git_dir / "hooks" / name
     if not hook_path.exists():
         return "NOT INSTALLED"
-    actual = hook_path.read_text()
+    try:
+        actual = hook_path.read_text()
+    except (PermissionError, OSError):
+        return "ERROR (cannot read)"
     if actual == expected_content:
         return "INSTALLED"
     return "MODIFIED (not the ctx hook — manual hook present)"
@@ -25,37 +26,30 @@ def run_status(repo_root: Path) -> None:
 
     conn = connect(db_path)
 
-    # 1. WAL mode is enabled on connect — journal mode is always WAL
-
-    # 2. Get table row counts
     tables = [
         "files", "functions", "call_graph", "dangers", "changes",
         "taint_queue", "session_log", "decisions", "directories"
     ]
-    counts = {}
+    counts: dict[str, int] = {}
     for table in tables:
         counts[table] = conn.execute(f"SELECT count(*) FROM {table};").fetchone()[0]
 
-    # 3. files breakdown by inferred language
-    lang_counts = {}
+    lang_counts: dict[str, int] = {}
     rows = conn.execute("SELECT path FROM files;").fetchall()
     for row in rows:
         ext = Path(row["path"]).suffix
         lang = EXTENSION_TO_LANGUAGE.get(ext, "unknown")
         lang_counts[lang] = lang_counts.get(lang, 0) + 1
 
-    # 4. call_graph unresolved and ambiguous count
     unresolved_count = conn.execute("SELECT count(*) FROM call_graph WHERE callee_id IS NULL;").fetchone()[0]
     ambiguous_count = conn.execute("SELECT count(*) FROM call_graph WHERE is_ambiguous = 1;").fetchone()[0]
 
-    # 6. FTS5 availability
     fts_available = True
     try:
         conn.execute("SELECT count(*) FROM files_fts;")
     except sqlite3.OperationalError:
         fts_available = False
 
-    # 7. Confidence distribution and staleness/taint statistics
     fresh = conn.execute("SELECT count(*) FROM functions WHERE confidence >= 1.0;").fetchone()[0]
     decayed_once = conn.execute("SELECT count(*) FROM functions WHERE confidence >= 0.5 AND confidence < 1.0;").fetchone()[0]
     low_confidence = conn.execute("SELECT count(*) FROM functions WHERE confidence >= 0.2 AND confidence < 0.5;").fetchone()[0]
@@ -66,19 +60,16 @@ def run_status(repo_root: Path) -> None:
     tainted_functions_count = conn.execute("SELECT count(*) FROM functions WHERE is_tainted = 1;").fetchone()[0]
     taint_queue_count = conn.execute("SELECT count(*) FROM taint_queue;").fetchone()[0]
 
-    # 8. Git hook status
     git_dir = repo_root / ".git"
     pre_status = _hook_status(git_dir, "pre-commit", PRE_COMMIT_HOOK)
     post_status = _hook_status(git_dir, "post-commit", POST_COMMIT_HOOK)
 
-    # 9. Recent changes
     recent_changes = conn.execute(
         "SELECT commit_hash, summary, timestamp FROM changes ORDER BY timestamp DESC LIMIT 5"
     ).fetchall()
 
     conn.close()
 
-    # Output status report
     repo_name = repo_root.name
     print(f"ctx status — {repo_name}")
     print()

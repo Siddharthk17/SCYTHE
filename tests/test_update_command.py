@@ -59,6 +59,7 @@ def test_update_needs_summary_true_for_all(
     mock_connect.return_value = conn
     mock_get_client.return_value = MagicMock()
     mock_get_model.return_value = "claude-test"
+    mock_reindex.return_value = (0, [], set())
 
     mock_call_llm.return_value = (json.dumps([
         {
@@ -109,6 +110,7 @@ def test_update_clears_taint(
     mock_connect.return_value = conn
     mock_get_client.return_value = MagicMock()
     mock_get_model.return_value = "claude-test"
+    mock_reindex.return_value = (0, [], set())
 
     mock_call_llm.return_value = (json.dumps([
         {
@@ -155,6 +157,7 @@ def test_update_diff_none_and_unchanged(
     mock_connect.return_value = conn
     mock_get_client.return_value = MagicMock()
     mock_get_model.return_value = "claude-test"
+    mock_reindex.return_value = (0, [], set())
 
     conn.execute("UPDATE files SET purpose = NULL, summary = NULL WHERE path = 'test.py'")
     conn.execute("UPDATE functions SET summary = 'func a unchanged' WHERE id = 'test.py::func_a'")

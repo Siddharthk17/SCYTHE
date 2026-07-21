@@ -43,6 +43,31 @@ def test_parse_response_formats():
     with pytest.raises(json.JSONDecodeError):
         parse_response("[invalid json")
 
+def test_parse_response_empty():
+    """Verify that parse_response rejects empty or fence-only content."""
+    with pytest.raises(ValueError, match="Empty response from LLM"):
+        parse_response("")
+    with pytest.raises(ValueError, match="Empty response from LLM"):
+        parse_response("   ")
+    with pytest.raises(ValueError, match="only fence markers"):
+        parse_response("```json\n```")
+    with pytest.raises(ValueError, match="only fence markers"):
+        parse_response("```\n```")
+
+def test_batch_files_invalid_size():
+    """Verify that batch_files rejects max_files_per_batch < 1."""
+    with pytest.raises(ValueError, match="must be >= 1"):
+        batch_files([], max_files_per_batch=0)
+    with pytest.raises(ValueError, match="must be >= 1"):
+        batch_files([], max_files_per_batch=-1)
+
+def test_get_taint_warning_none():
+    """Verify that get_taint_warning with None source returns generic message."""
+    conn = sqlite3.connect(":memory:")
+    assert get_taint_warning(conn, None) == "depends on a dependency that changed"
+    assert get_taint_warning(conn, "") == "depends on a dependency that changed"
+    conn.close()
+
 def test_get_taint_warning():
     """Verify that get_taint_warning resolves the source function ID to a warning note."""
     conn = sqlite3.connect(":memory:")

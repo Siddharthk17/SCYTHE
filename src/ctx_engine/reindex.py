@@ -41,14 +41,18 @@ def reindex_file(
     repo_root: Path,
     path: str,
     language: str
-) -> tuple[set[str], list[tuple[str, list[str]]], dict]:
+) -> tuple[set[str], list[tuple[str, list[str]]], dict, bool]:
     """
     Run Pass 1 of the reindexing pipeline for a single file.
     Compares the new hashes to the stored ones, preserves/decays metadata,
     and returns (changed_function_ids, removed_function_ids_with_caller_snapshots, ext_data, has_parse_errors).
     """
     file_abspath = repo_root / path
-    source = file_abspath.read_bytes()
+    try:
+        source = file_abspath.read_bytes()
+    except (FileNotFoundError, PermissionError, OSError) as err:
+        logger.error("Cannot read %s: %s — skipping", path, err)
+        return set(), [], {"exports": [], "imports_raw": [], "class_superclasses": {}, "functions": []}, False
     content_hash_val = file_content_hash(source)
 
     # Parse and extract
@@ -259,10 +263,10 @@ def run_reindex_pipeline(
     conn: sqlite3.Connection,
     repo_root: Path,
     files_to_reindex: dict[str, str]
-) -> tuple[int, list[str]]:
+) -> tuple[int, list[str], set[str]]:
     """Run the 4-pass reindexing pipeline for the specified files.
 
-    Returns (parse_error_count, parse_error_paths).
+    Returns (parse_error_count, parse_error_paths, all_changed_func_ids).
     """
     conn.row_factory = sqlite3.Row
     now = datetime.now(timezone.utc).isoformat()
@@ -450,4 +454,4 @@ def run_reindex_pipeline(
     for rid, snapshot_callers in all_removed_funcs_snapshots:
         propagate_taint(conn, rid, caller_snapshot=snapshot_callers)
 
-    return parse_error_count, parse_error_paths
+    return parse_error_count, parse_error_paths, all_changed_func_ids

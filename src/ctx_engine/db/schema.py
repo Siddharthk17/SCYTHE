@@ -43,6 +43,9 @@ TABLES_DDL = [
     );
     """,
     """
+    CREATE INDEX IF NOT EXISTS idx_functions_file ON functions(file);
+    """,
+    """
     CREATE TABLE IF NOT EXISTS call_graph (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
         caller_id     TEXT NOT NULL REFERENCES functions(id) ON DELETE CASCADE,
