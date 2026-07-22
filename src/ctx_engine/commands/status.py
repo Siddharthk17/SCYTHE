@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from pathlib import Path
 from ctx_engine.db import connect
@@ -68,6 +69,20 @@ def run_status(repo_root: Path) -> None:
         "SELECT commit_hash, summary, timestamp FROM changes ORDER BY timestamp DESC LIMIT 5"
     ).fetchall()
 
+    mcp_json_path = repo_root / ".mcp.json"
+    if mcp_json_path.exists():
+        try:
+            mcp_config = json.loads(mcp_json_path.read_text(encoding="utf-8"))
+            ctx_configured = "ctx" in mcp_config.get("mcpServers", {})
+            if ctx_configured:
+                mcp_config_status = f"PRESENT (ctx serve configured)"
+            else:
+                mcp_config_status = f"PRESENT (ctx not configured)"
+        except (json.JSONDecodeError, OSError):
+            mcp_config_status = "ERROR (invalid .mcp.json)"
+    else:
+        mcp_config_status = "NOT CONFIGURED (run 'ctx generate-mcp-config')"
+
     conn.close()
 
     repo_name = repo_root.name
@@ -115,3 +130,7 @@ def run_status(repo_root: Path) -> None:
             print(f"    {h}  \"{s}\"  {t}")
     else:
         print("    (none — run 'ctx install-hooks' and make a commit)")
+    print()
+    print("  mcp server:")
+    print(f"    config: {mcp_config_status}")
+    print("    last connection: (no connection log yet — connects on demand)")

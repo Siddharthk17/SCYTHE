@@ -1,7 +1,7 @@
 import click
 from pathlib import Path
 from ctx_engine import __version__
-from ctx_engine.commands import run_init, run_status
+from ctx_engine.commands import run_init, run_status, run_serve, run_generate_mcp_config
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(version=__version__, prog_name="ctx")
@@ -165,6 +165,36 @@ def sync_cmd(repo_root: Path, dry_run: bool) -> None:
     try:
         run_sync(repo_root.resolve(), dry_run)
     except FileNotFoundError as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
+
+@main.command(name="serve")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+    help="Path to the repository root directory."
+)
+def serve_cmd(repo_root: Path) -> None:
+    """Start the ctx MCP server (stdio transport)."""
+    try:
+        run_serve(repo_root.resolve())
+    except FileNotFoundError as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
+
+@main.command(name="generate-mcp-config")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+    help="Path to the repository root directory."
+)
+def generate_mcp_config_cmd(repo_root: Path) -> None:
+    """Generate a .mcp.json configuration file for Claude Desktop."""
+    try:
+        run_generate_mcp_config(repo_root.resolve())
+    except (FileNotFoundError, FileExistsError) as err:
         click.echo(f"Error: {err}", err=True)
         raise click.Abort()
 

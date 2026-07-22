@@ -40,3 +40,6 @@ node_modules/
 
 # ctx index database — regenerable local index, never committed
 .ctx/
+
+# MCP config — generated per-workspace, user-specific
+.mcp.json

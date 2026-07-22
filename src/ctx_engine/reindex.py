@@ -247,6 +247,17 @@ def reindex_file(
                 )
             )
 
+        # Re-populate taint_queue for preserved taint state
+        for f_data in new_funcs_to_insert:
+            if f_data["is_tainted"] and f_data["taint_source"]:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO taint_queue (function_id, taint_source, queued_at, priority)
+                    VALUES (?, ?, ?, 0)
+                    """,
+                    (f_data["id"], f_data["taint_source"], now)
+                )
+
     return (
         changed_function_ids,
         removed_function_ids_with_caller_snapshots,

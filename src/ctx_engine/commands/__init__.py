@@ -6,6 +6,8 @@ from ctx_engine.commands.install_hooks import run_install_hooks
 from ctx_engine.commands.sync import run_sync
 from ctx_engine.commands.summarize import run_summarize
 from ctx_engine.commands.update import run_update
+from ctx_engine.commands.serve import run_serve
+from ctx_engine.commands.generate_mcp_config import run_generate_mcp_config
 
 __all__ = [
     "run_init",
@@ -16,4 +18,6 @@ __all__ = [
     "run_sync",
     "run_summarize",
     "run_update",
+    "run_serve",
+    "run_generate_mcp_config",
 ]
