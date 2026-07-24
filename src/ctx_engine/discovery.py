@@ -66,3 +66,7 @@ def discover_parseable_files(repo_root: Path) -> dict[str, str]:
         if ext in EXTENSION_TO_LANGUAGE:
             parseable_map[relative_path] = EXTENSION_TO_LANGUAGE[ext]
     return parseable_map
+
+
+def get_parseable_extensions() -> set[str]:
+    return set(EXTENSION_TO_LANGUAGE.keys())

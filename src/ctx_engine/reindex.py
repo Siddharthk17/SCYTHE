@@ -1,8 +1,11 @@
 # Reindexing pipeline for ctx index database.
 
+import hashlib
 import json
 import logging
+import os
 import sqlite3
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,7 +22,8 @@ from ctx_engine.languages import (
     GoAdapter,
     RustAdapter,
 )
-from ctx_engine.languages.registry import get_parser
+from ctx_engine.languages.base import FileStructure, FunctionRecord
+from ctx_engine.languages.registry import get_parser, parse_file
 from ctx_engine.imports_graph import resolve_imports_graph
 from ctx_engine.call_graph import resolve_calls
 from ctx_engine.intelligence.confidence import decay
@@ -35,6 +39,142 @@ ADAPTERS = {
     "go": GoAdapter(),
     "rust": RustAdapter(),
 }
+
+
+def extension_to_language(ext: str) -> str | None:
+    return EXTENSION_TO_LANGUAGE.get(ext)
+
+
+def can_skip_file(
+    conn: sqlite3.Connection,
+    abs_path: Path,
+    rel_path: str,
+) -> bool:
+    """
+    Returns True if the file's mtime and size match the cached values,
+    meaning its content is guaranteed unchanged since last index.
+    Known limitation: rsync / git checkout can preserve original mtime,
+    making a replaced file look unchanged. Combining mtime + size check
+    makes false cache hits negligible on developer workstations.
+    """
+    try:
+        stat = abs_path.stat()
+    except (FileNotFoundError, PermissionError, OSError):
+        return False
+    current_mtime = stat.st_mtime
+    current_size = stat.st_size
+
+    row = conn.execute(
+        "SELECT mtime, file_size, content_hash FROM files WHERE path = ?",
+        (rel_path,),
+    ).fetchone()
+
+    if row is None:
+        return False
+
+    if row["mtime"] is None or row["file_size"] is None:
+        return False
+
+    if abs(current_mtime - row["mtime"]) < 0.01 and current_size == row["file_size"]:
+        return True
+
+    return False
+
+
+@dataclass
+class ParseResult:
+    rel_path: str
+    language: str
+    file_structure: FileStructure
+    file_semantic_hash: str
+    content_hash: str
+    mtime: float
+    file_size: int
+    function_hashes: dict[str, str]
+    parse_had_errors: bool
+    error: str | None = None
+
+
+def parse_one_file(args: tuple[str, str, str]) -> ParseResult:
+    rel_path, language, repo_root_str = args
+    repo_root = Path(repo_root_str)
+    abs_path = repo_root / rel_path
+    try:
+        raw_bytes = abs_path.read_bytes()
+        stat = abs_path.stat()
+        content_hash = hashlib.sha256(raw_bytes).hexdigest()
+        tree, source = parse_file(abs_path, language)
+        adapter = ADAPTERS[language]
+        file_structure = adapter.extract(tree, source)
+        file_sem_hash = file_semantic_hash(tree, source, language)
+        fn_hashes = {
+            fn.name: function_semantic_hash(fn.node, source, language)
+            for fn in file_structure.functions
+        }
+
+        # Strip unpicklable AST node references for cross-process transport
+        stripped_funcs = []
+        for fn in file_structure.functions:
+            stripped_funcs.append(
+                FunctionRecord(
+                    name=fn.name,
+                    class_name=fn.class_name,
+                    signature=fn.signature,
+                    line_start=fn.line_start,
+                    line_end=fn.line_end,
+                    node=None,
+                    body_node=None,
+                    mutates=fn.mutates,
+                )
+            )
+        stripped = FileStructure(
+            exports=file_structure.exports,
+            imports_raw=file_structure.imports_raw,
+            functions=stripped_funcs,
+            class_superclasses=file_structure.class_superclasses,
+        )
+
+        return ParseResult(
+            rel_path=rel_path,
+            language=language,
+            file_structure=stripped,
+            file_semantic_hash=file_sem_hash,
+            content_hash=content_hash,
+            mtime=stat.st_mtime,
+            file_size=stat.st_size,
+            function_hashes=fn_hashes,
+            parse_had_errors=tree.root_node.has_error,
+        )
+    except Exception as e:
+        return ParseResult(
+            rel_path=rel_path,
+            language=language,
+            file_structure=FileStructure(exports=[], imports_raw=[], functions=[]),
+            file_semantic_hash="",
+            content_hash="",
+            mtime=0.0,
+            file_size=0,
+            function_hashes={},
+            parse_had_errors=True,
+            error=str(e),
+        )
+
+def apply_parse_result(conn: sqlite3.Connection, result: ParseResult) -> None:
+    conn.execute(
+        "UPDATE files SET mtime = ?, file_size = ? WHERE path = ?",
+        (result.mtime, result.file_size, result.rel_path),
+    )
+
+
+def reindex_single_file(
+    conn: sqlite3.Connection,
+    repo_root: Path,
+    rel_path: str,
+    language: str,
+) -> list[str]:
+    changed_ids, _, _, _ = reindex_file(conn, repo_root, rel_path, language)
+    return list(changed_ids)
+
 
 def reindex_file(
     conn: sqlite3.Connection,
@@ -193,13 +333,16 @@ def reindex_file(
         conn.execute("DELETE FROM functions WHERE file = ?", (path,))
 
         # Insert or replace file record
+        mtime = float(file_abspath.stat().st_mtime)
+        file_size = int(file_abspath.stat().st_size)
         conn.execute(
             """
             INSERT OR REPLACE INTO files (
                 path, system, purpose, exports, imports, used_by, used_by_count,
                 summary, danger, last_change, semantic_hash, content_hash,
-                confidence, is_stale, updated_at, indexed_at
-            ) VALUES (?, NULL, ?, ?, NULL, NULL, 0, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+                confidence, is_stale, updated_at, indexed_at,
+                mtime, file_size
+            ) VALUES (?, NULL, ?, ?, NULL, NULL, 0, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 path,
@@ -212,7 +355,9 @@ def reindex_file(
                 file_confidence,
                 file_is_stale,
                 now,
-                file_indexed_at
+                file_indexed_at,
+                mtime,
+                file_size,
             )
         )
 

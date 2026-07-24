@@ -1,5 +1,24 @@
 # Schema definition for the ctx index database.
 
+MIGRATIONS = [
+    """
+    ALTER TABLE files ADD COLUMN mtime REAL;
+    """,
+    """
+    ALTER TABLE files ADD COLUMN file_size INTEGER;
+    """,
+]
+
+def apply_migrations(conn) -> None:
+    for sql in MIGRATIONS:
+        try:
+            conn.execute(sql)
+        except conn.OperationalError as e:
+            if "duplicate column name" in str(e).lower():
+                pass
+            else:
+                raise
+
 TABLES_DDL = [
     """
     CREATE TABLE IF NOT EXISTS files (

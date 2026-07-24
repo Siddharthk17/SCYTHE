@@ -1,7 +1,7 @@
 import logging
 import sqlite3
 from pathlib import Path
-from ctx_engine.db.schema import TABLES_DDL, FTS5_DDL
+from ctx_engine.db.schema import TABLES_DDL, FTS5_DDL, apply_migrations
 
 logger = logging.getLogger("ctx")
 
@@ -28,3 +28,5 @@ def init_schema(conn: sqlite3.Connection) -> None:
                 logger.warning("FTS5 unavailable — search will fall back to LIKE queries")
             else:
                 raise
+
+    apply_migrations(conn)

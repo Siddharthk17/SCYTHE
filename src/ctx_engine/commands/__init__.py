@@ -8,6 +8,7 @@ from ctx_engine.commands.summarize import run_summarize
 from ctx_engine.commands.update import run_update
 from ctx_engine.commands.serve import run_serve
 from ctx_engine.commands.generate_mcp_config import run_generate_mcp_config
+from ctx_engine.commands.watch import run_watch, run_watch_stop, run_watch_status
 
 __all__ = [
     "run_init",
@@ -20,4 +21,7 @@ __all__ = [
     "run_update",
     "run_serve",
     "run_generate_mcp_config",
+    "run_watch",
+    "run_watch_stop",
+    "run_watch_status",
 ]

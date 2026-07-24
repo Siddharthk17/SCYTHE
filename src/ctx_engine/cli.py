@@ -1,4 +1,5 @@
 import click
+import sys
 from pathlib import Path
 from ctx_engine import __version__
 from ctx_engine.commands import run_init, run_status, run_serve, run_generate_mcp_config
@@ -197,4 +198,47 @@ def generate_mcp_config_cmd(repo_root: Path) -> None:
     except (FileNotFoundError, FileExistsError) as err:
         click.echo(f"Error: {err}", err=True)
         raise click.Abort()
+
+@main.group(name="watch")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+    help="Path to the repository root directory."
+)
+@click.pass_context
+def watch_group(ctx: click.Context, repo_root: Path) -> None:
+    """Watch files for changes and update the index automatically."""
+    ctx.ensure_object(dict)
+    ctx.obj["repo_root"] = repo_root.resolve()
+
+@watch_group.command(name="start")
+@click.option("--with-ollama", is_flag=True, help="Enable local LLM summarization via Ollama.")
+@click.option("--daemon", is_flag=True, help="Run in the background as a daemon.")
+@click.option("--log-file", default=None, help="Path to the watch log file.")
+@click.pass_context
+def watch_start_cmd(ctx: click.Context, with_ollama: bool, daemon: bool, log_file: str | None) -> None:
+    """Start the file watcher daemon."""
+    from ctx_engine.commands.watch import run_watch
+    try:
+        run_watch(ctx.obj["repo_root"], with_ollama, daemon, log_file)
+    except SystemExit:
+        raise
+    except Exception as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
+
+@watch_group.command(name="stop")
+@click.pass_context
+def watch_stop_cmd(ctx: click.Context) -> None:
+    """Stop the file watcher daemon."""
+    from ctx_engine.commands.watch import run_watch_stop
+    run_watch_stop(ctx.obj["repo_root"])
+
+@watch_group.command(name="status")
+@click.pass_context
+def watch_status_cmd(ctx: click.Context) -> None:
+    """Show the file watcher daemon status."""
+    from ctx_engine.commands.watch import run_watch_status
+    run_watch_status(ctx.obj["repo_root"])
 

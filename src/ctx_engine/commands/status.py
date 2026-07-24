@@ -4,6 +4,12 @@ from pathlib import Path
 from ctx_engine.db import connect
 from ctx_engine.discovery import EXTENSION_TO_LANGUAGE
 from ctx_engine.commands.install_hooks import PRE_COMMIT_HOOK, POST_COMMIT_HOOK
+from ctx_engine.daemon.daemon import (
+    is_process_alive,
+    read_pid_file,
+    read_watch_state,
+    remove_pid_file,
+)
 
 
 def _hook_status(git_dir: Path, name: str, expected_content: str) -> str:
@@ -83,6 +89,37 @@ def run_status(repo_root: Path) -> None:
     else:
         mcp_config_status = "NOT CONFIGURED (run 'ctx generate-mcp-config')"
 
+    pid_path = repo_root / ".ctx" / "watch.pid"
+    state_path = repo_root / ".ctx" / "watch-state.json"
+    pid = read_pid_file(pid_path)
+    if pid is not None and is_process_alive(pid):
+        state = read_watch_state(state_path)
+        watcher_status = f"RUNNING (PID: {pid})"
+        watcher_events = (
+            f"{state.get('events_processed', 0)} processed "
+            f"({state.get('semantic_changes', 0)} semantic, "
+            f"{state.get('formatting_changes', 0)} formatting-only)"
+        )
+        watcher_ollama = ""
+    else:
+        if pid is not None:
+            remove_pid_file(pid_path)
+        watcher_status = "NOT RUNNING"
+        watcher_events = ""
+        watcher_ollama = ""
+
+    total_files = counts.get("files", 0)
+    if total_files > 0:
+        cached_files = conn.execute(
+            "SELECT COUNT(*) FROM files WHERE mtime IS NOT NULL"
+        ).fetchone()[0]
+        mtime_coverage = (cached_files / total_files * 100) if total_files > 0 else 0
+        uncached = total_files - cached_files
+    else:
+        cached_files = 0
+        mtime_coverage = 0.0
+        uncached = 0
+
     conn.close()
 
     repo_name = repo_root.name
@@ -111,6 +148,19 @@ def run_status(repo_root: Path) -> None:
     print(f"    0.5–1.0    : {decayed_once:<6}  (decayed)")
     print(f"    0.2–0.5    : {low_confidence:<6}  [LOW CONFIDENCE]")
     print(f"    0.0–0.2    : {likely_stale:<6}  [LIKELY STALE]")
+    print()
+    print("  file watcher:")
+    print(f"    status: {watcher_status}")
+    if watcher_status.startswith("RUNNING"):
+        print(f"    events: {watcher_events}")
+    print()
+    print("  mtime cache:")
+    if total_files > 0:
+        print(f"    files with mtime cached: {cached_files} of {total_files} "
+              f"({uncached} uncached — will parse on next init)")
+        print(f"    cache coverage: {mtime_coverage:.1f}%")
+    else:
+        print("    (no files indexed — run 'ctx init')")
     print()
     print("  staleness:")
     print(f"    is_stale   : {stale_functions_count} functions, {stale_files_count} files")
