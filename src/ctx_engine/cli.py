@@ -199,18 +199,23 @@ def generate_mcp_config_cmd(repo_root: Path) -> None:
         click.echo(f"Error: {err}", err=True)
         raise click.Abort()
 
-@main.group(name="watch")
+@main.group(name="watch", invoke_without_command=True)
 @click.option(
     "--repo-root",
     default=".",
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
     help="Path to the repository root directory."
 )
+@click.option("--with-ollama", is_flag=True, help="Enable local LLM summarization via Ollama.")
+@click.option("--daemon", is_flag=True, help="Run in the background as a daemon.")
+@click.option("--log-file", default=None, help="Path to the watch log file.")
 @click.pass_context
-def watch_group(ctx: click.Context, repo_root: Path) -> None:
+def watch_group(ctx: click.Context, repo_root: Path, with_ollama: bool, daemon: bool, log_file: str | None) -> None:
     """Watch files for changes and update the index automatically."""
     ctx.ensure_object(dict)
     ctx.obj["repo_root"] = repo_root.resolve()
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(watch_start_cmd, with_ollama=with_ollama, daemon=daemon, log_file=log_file)
 
 @watch_group.command(name="start")
 @click.option("--with-ollama", is_flag=True, help="Enable local LLM summarization via Ollama.")

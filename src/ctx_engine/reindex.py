@@ -159,13 +159,6 @@ def parse_one_file(args: tuple[str, str, str]) -> ParseResult:
             error=str(e),
         )
 
-def apply_parse_result(conn: sqlite3.Connection, result: ParseResult) -> None:
-    conn.execute(
-        "UPDATE files SET mtime = ?, file_size = ? WHERE path = ?",
-        (result.mtime, result.file_size, result.rel_path),
-    )
-
-
 def reindex_single_file(
     conn: sqlite3.Connection,
     repo_root: Path,

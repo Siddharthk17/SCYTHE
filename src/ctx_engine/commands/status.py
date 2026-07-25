@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 from pathlib import Path
 from ctx_engine.db import connect
@@ -10,6 +11,7 @@ from ctx_engine.daemon.daemon import (
     read_watch_state,
     remove_pid_file,
 )
+from ctx_engine.daemon.local_llm import is_ollama_available, get_available_models, select_model
 
 
 def _hook_status(git_dir: Path, name: str, expected_content: str) -> str:
@@ -23,6 +25,16 @@ def _hook_status(git_dir: Path, name: str, expected_content: str) -> str:
     if actual == expected_content:
         return "INSTALLED"
     return "MODIFIED (not the ctx hook — manual hook present)"
+
+
+def _ollama_status_text(ollama_host: str) -> str:
+    if is_ollama_available(ollama_host):
+        available = get_available_models(ollama_host)
+        model = select_model(available)
+        if model:
+            return f"available (model: {model})"
+        return "available (no preferred model found)"
+    return "not available"
 
 
 def run_status(repo_root: Path) -> None:
@@ -92,6 +104,7 @@ def run_status(repo_root: Path) -> None:
     pid_path = repo_root / ".ctx" / "watch.pid"
     state_path = repo_root / ".ctx" / "watch-state.json"
     pid = read_pid_file(pid_path)
+    ollama_host = os.environ.get("CTX_OLLAMA_HOST", "http://localhost:11434")
     if pid is not None and is_process_alive(pid):
         state = read_watch_state(state_path)
         watcher_status = f"RUNNING (PID: {pid})"
@@ -100,13 +113,13 @@ def run_status(repo_root: Path) -> None:
             f"({state.get('semantic_changes', 0)} semantic, "
             f"{state.get('formatting_changes', 0)} formatting-only)"
         )
-        watcher_ollama = ""
+        watcher_ollama = _ollama_status_text(ollama_host)
     else:
         if pid is not None:
             remove_pid_file(pid_path)
         watcher_status = "NOT RUNNING"
         watcher_events = ""
-        watcher_ollama = ""
+        watcher_ollama = _ollama_status_text(ollama_host)
 
     total_files = counts.get("files", 0)
     if total_files > 0:
@@ -153,6 +166,7 @@ def run_status(repo_root: Path) -> None:
     print(f"    status: {watcher_status}")
     if watcher_status.startswith("RUNNING"):
         print(f"    events: {watcher_events}")
+    print(f"    ollama: {watcher_ollama}")
     print()
     print("  mtime cache:")
     if total_files > 0:

@@ -1,7 +1,5 @@
 import hashlib
-import json
 import logging
-import os
 import sqlite3
 import threading
 import time
@@ -14,6 +12,7 @@ from watchdog.events import (
     FileSystemEventHandler,
 )
 
+from ctx_engine.daemon.daemon import write_watch_state, read_watch_state
 from ctx_engine.daemon.local_llm import OllamaClient
 from ctx_engine.db.connection import connect
 from ctx_engine.hashing import file_semantic_hash
@@ -34,12 +33,14 @@ class CtxFileEventHandler(FileSystemEventHandler):
         parseable_extensions: set[str],
         debounce_seconds: float = 0.5,
         ollama_client: OllamaClient | None = None,
+        state_path: Path | None = None,
     ):
         self._conn_factory = conn_factory
         self._repo_root = repo_root
         self._parseable_extensions = parseable_extensions
         self._debounce_seconds = debounce_seconds
         self._ollama_client = ollama_client
+        self._state_path = state_path
         self._pending: dict[str, float] = {}
         self._pending_lock = threading.Lock()
         self._timer: threading.Timer | None = None
@@ -96,6 +97,18 @@ class CtxFileEventHandler(FileSystemEventHandler):
         finally:
             conn.close()
 
+    def _update_watch_state(self, change_type: str, rel_path: str) -> None:
+        if self._state_path is None:
+            return
+        state = read_watch_state(self._state_path)
+        state["events_processed"] = state.get("events_processed", 0) + 1
+        if change_type == "semantic":
+            state["semantic_changes"] = state.get("semantic_changes", 0) + 1
+        elif change_type == "formatting":
+            state["formatting_changes"] = state.get("formatting_changes", 0) + 1
+        state["last_event"] = rel_path
+        write_watch_state(self._state_path, state)
+
     def _process_file_change(
         self,
         conn: sqlite3.Connection,
@@ -110,6 +123,7 @@ class CtxFileEventHandler(FileSystemEventHandler):
             )
             conn.commit()
             logger.info("Deleted (marked stale): %s", rel_path)
+            self._update_watch_state("deleted", rel_path)
             return
 
         raw_bytes = abs_path.read_bytes()
@@ -149,6 +163,7 @@ class CtxFileEventHandler(FileSystemEventHandler):
             logger.info(
                 "Formatting change (metadata preserved): %s", rel_path
             )
+            self._update_watch_state("formatting", rel_path)
             return
 
         logger.info(
@@ -169,3 +184,5 @@ class CtxFileEventHandler(FileSystemEventHandler):
 
         if self._ollama_client is not None and changed_function_ids:
             self._ollama_client.enqueue(rel_path, changed_function_ids)
+
+        self._update_watch_state("semantic", rel_path)

@@ -1,3 +1,6 @@
+import json
+import sqlite3
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -6,6 +9,7 @@ import pytest
 from watchdog.events import FileModifiedEvent, FileCreatedEvent
 
 from ctx_engine.daemon.watcher import CtxFileEventHandler
+from ctx_engine.db import init_schema, connect
 
 
 @pytest.fixture
@@ -76,3 +80,67 @@ def test_flush_clears_pending(handler):
     handler._pending = {"file.py": 0.0}
     handler._flush()
     assert "file.py" not in handler._pending
+
+
+@pytest.fixture
+def real_db_and_repo(tmp_path):
+    (tmp_path / ".git").mkdir()
+    py_file = tmp_path / "test.py"
+    py_file.write_text("def foo():\n    return 1\n")
+    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True, check=True)
+    subprocess.run(["git", "add", "test.py"], cwd=tmp_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True, check=True)
+
+    db_path = tmp_path / ".ctx" / "index.db"
+    db_path.parent.mkdir()
+    conn = connect(db_path)
+    init_schema(conn)
+
+    stat = py_file.stat()
+    conn.execute(
+        "INSERT INTO files (path, content_hash, semantic_hash, confidence, is_stale, mtime, file_size) "
+        "VALUES (?, ?, ?, 1.0, 0, ?, ?)",
+        ("test.py", "old_hash", "old_sem_hash", stat.st_mtime, stat.st_size),
+    )
+    conn.commit()
+    conn.close()
+
+    return tmp_path, db_path
+
+
+def test_handle_change_with_real_db_and_reindex(real_db_and_repo):
+    repo_root, db_path = real_db_and_repo
+
+    def conn_factory():
+        c = connect(db_path)
+        c.row_factory = sqlite3.Row
+        return c
+
+    handler = CtxFileEventHandler(
+        conn_factory=conn_factory,
+        repo_root=repo_root,
+        parseable_extensions={".py"},
+        debounce_seconds=0.1,
+        ollama_client=None,
+        state_path=repo_root / ".ctx" / "watch-state.json",
+    )
+
+    (repo_root / "test.py").write_text("def bar():\n    return 2\n")
+    handler._pending = {"test.py": 0.0}
+    handler._flush()
+
+    conn = conn_factory()
+    row = conn.execute("SELECT content_hash, is_stale FROM files WHERE path = ?", ("test.py",)).fetchone()
+    assert row is not None
+    assert row["content_hash"] != "old_hash"
+    assert row["is_stale"] == 1
+
+    state_path = repo_root / ".ctx" / "watch-state.json"
+    assert state_path.exists()
+    state = json.loads(state_path.read_text())
+    assert state["events_processed"] >= 1
+    assert state["semantic_changes"] >= 1
+    assert state["last_event"] == "test.py"
+    conn.close()

@@ -14,6 +14,7 @@ from ctx_engine.daemon.daemon import (
     is_process_alive,
     read_pid_file,
     read_watch_state,
+    register_sigterm_handler,
     remove_pid_file,
     send_stop_signal,
     setup_watch_logging,
@@ -56,9 +57,10 @@ def run_watch(
 
     if daemon_mode:
         setup_watch_logging(log_path)
-        daemonize()
+        daemonize(pid_path=pid_path)
 
     write_pid_file(pid_path)
+    register_sigterm_handler(pid_path)
 
     model_name = None
     ollama_client = None
@@ -93,6 +95,7 @@ def run_watch(
         parseable_extensions=parseable_extensions,
         debounce_seconds=float(os.environ.get("CTX_WATCH_DEBOUNCE_MS", "500")) / 1000.0,
         ollama_client=ollama_client,
+        state_path=state_path,
     )
 
     observer = Observer()
@@ -158,6 +161,16 @@ def run_watch_stop(repo_root: Path) -> None:
         sys.exit(1)
 
 
+def _ollama_status_text(ollama_host: str) -> str:
+    if is_ollama_available(ollama_host):
+        available = get_available_models(ollama_host)
+        model = select_model(available)
+        if model:
+            return f"available (model: {model})"
+        return "available (no preferred model found)"
+    return "not available"
+
+
 def run_watch_status(repo_root: Path) -> None:
     pid_path = repo_root / ".ctx" / "watch.pid"
     state_path = repo_root / ".ctx" / "watch-state.json"
@@ -167,8 +180,10 @@ def run_watch_status(repo_root: Path) -> None:
     if pid is None or not is_process_alive(pid):
         if pid is not None:
             remove_pid_file(pid_path)
+        ollama_host = os.environ.get("CTX_OLLAMA_HOST", "http://localhost:11434")
         print("  file watcher:")
         print("    status: NOT RUNNING")
+        print(f"    ollama: {_ollama_status_text(ollama_host)}")
         print("    (run 'ctx watch' or 'ctx watch --daemon' to start)")
         return
 
@@ -179,11 +194,13 @@ def run_watch_status(repo_root: Path) -> None:
     semantic_changes = state.get("semantic_changes", 0)
     formatting_changes = state.get("formatting_changes", 0)
     last_event = state.get("last_event")
+    ollama_host = os.environ.get("CTX_OLLAMA_HOST", "http://localhost:11434")
 
     print("  file watcher:")
     print(f"    status: RUNNING (PID: {pid}, started {started_at})")
     print(f"    events (since start): {events_processed} processed "
           f"({semantic_changes} semantic, {formatting_changes} formatting-only)")
+    print(f"    ollama: {_ollama_status_text(ollama_host)}")
     if last_event:
         print(f"    last event: {last_event}")
     print()

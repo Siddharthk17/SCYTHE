@@ -9,10 +9,39 @@ from pathlib import Path
 
 logger = logging.getLogger("ctx")
 
+_cleanup_pid_path: Path | None = None
 
-def daemonize() -> None:
+
+def _sigterm_handler(signum: int, frame: object) -> None:
+    logger.info("Received SIGTERM, shutting down...")
+    if _cleanup_pid_path is not None:
+        remove_pid_file(_cleanup_pid_path)
+    sys.exit(0)
+
+
+def register_sigterm_handler(pid_path: Path) -> None:
+    global _cleanup_pid_path
+    _cleanup_pid_path = pid_path
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+    signal.signal(signal.SIGINT, _sigterm_handler)
+
+
+def daemonize(pid_path: Path | None = None) -> None:
     if os.name == "nt":
-        return
+        import subprocess
+        DETACHED_PROCESS = 0x00000008
+        subprocess.Popen(
+            sys.argv,
+            creationflags=DETACHED_PROCESS,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        sys.exit(0)
+
+    if pid_path is not None:
+        register_sigterm_handler(pid_path)
+
     if os.fork() > 0:
         sys.exit(0)
     os.setsid()
