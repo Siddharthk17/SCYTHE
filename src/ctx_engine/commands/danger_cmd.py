@@ -1,14 +1,9 @@
-import hashlib
 import click
 from datetime import datetime, timezone
 
 from ctx_engine.db import connect
+from ctx_engine.hashing import gen_id
 from ctx_engine.intelligence.heuristics import run_heuristic_detection
-
-
-def _gen_id(*parts: str) -> str:
-    combined = "".join(parts)
-    return hashlib.sha256(combined.encode()).hexdigest()[:12]
 
 
 def danger_add(
@@ -17,7 +12,7 @@ def danger_add(
     description: str,
     reason: str,
 ) -> str:
-    danger_id = _gen_id(f"{scope}:{description}")
+    danger_id = gen_id(f"{scope}:{description}")
 
     conn.execute(
         """INSERT INTO dangers (id, scope, description, reason, added_by, created_at)
@@ -39,10 +34,10 @@ def danger_remove(conn, danger_id: str, confirmed: bool = False) -> str:
     if row is None:
         return f"No danger zone found with id '{danger_id}'."
 
-    if row["added_by"] == "human" and not confirmed:
-        return (
-            f"This danger was added by {row['added_by']}. "
-            f"Use --confirm to remove it."
+    if not confirmed:
+        click.confirm(
+            f"Remove danger zone '{danger_id}' ({row['description']})?",
+            abort=True,
         )
 
     conn.execute("DELETE FROM dangers WHERE id = ?", (danger_id,))
@@ -51,7 +46,12 @@ def danger_remove(conn, danger_id: str, confirmed: bool = False) -> str:
 
 
 def danger_list(conn, scope: str | None = None) -> list[dict]:
-    if scope:
+    if scope == "*":
+        rows = conn.execute(
+            "SELECT id, scope, description, reason, added_by, created_at FROM dangers "
+            "WHERE scope IS NOT NULL ORDER BY added_by DESC, rowid"
+        ).fetchall()
+    elif scope:
         rows = conn.execute(
             "SELECT id, scope, description, reason, added_by, created_at FROM dangers "
             "WHERE scope = ? ORDER BY added_by DESC, rowid",

@@ -51,14 +51,14 @@ def test_status_shows_hooks(status_repo, capsys):
 
 def test_status_shows_recent_changes(status_repo, capsys):
     """Status output shows recent changes from the changes table."""
-    run_status(status_repo)
+    run_status(status_repo, full=True)
     out = capsys.readouterr().out
     assert "recent changes" in out.lower()
     assert "deadbee" in out
 
 
 def test_status_shows_wal_mode(tmp_path, capsys):
-    """Status output includes WAL mode annotation."""
+    """Status output includes WAL mode annotation in full mode."""
     subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
     db_path = tmp_path / ".ctx" / "index.db"
     db_path.parent.mkdir(exist_ok=True)
@@ -71,7 +71,7 @@ def test_status_shows_wal_mode(tmp_path, capsys):
     conn.commit()
     conn.close()
 
-    run_status(tmp_path)
+    run_status(tmp_path, full=True)
     out = capsys.readouterr().out
     assert "WAL mode" in out
 
@@ -96,7 +96,7 @@ def test_status_hook_modified(status_repo, capsys):
 
 
 def test_status_no_changes_section(tmp_path, capsys):
-    """No records in changes table -> 'none' message."""
+    """No records in changes table -> 'none' message in full mode."""
     subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
     db_path = tmp_path / ".ctx" / "index.db"
     db_path.parent.mkdir(exist_ok=True)
@@ -104,7 +104,7 @@ def test_status_no_changes_section(tmp_path, capsys):
     init_schema(conn)
     conn.close()
 
-    run_status(tmp_path)
+    run_status(tmp_path, full=True)
     out = capsys.readouterr().out
     assert "recent changes" in out.lower()
     assert "none" in out.lower() or "install-hooks" in out.lower()

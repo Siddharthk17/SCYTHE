@@ -1,4 +1,3 @@
-import hashlib
 import json
 import logging
 import sqlite3
@@ -6,12 +5,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ctx_engine.hashing import gen_id
+
 logger = logging.getLogger("ctx")
-
-
-def _gen_id(*parts: str) -> str:
-    combined = "".join(parts)
-    return hashlib.sha256(combined.encode()).hexdigest()[:12]
 
 
 def handle_add_danger(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
@@ -22,7 +18,7 @@ def handle_add_danger(conn: sqlite3.Connection, repo_root: Path, arguments: dict
     if not description:
         return "Error: 'description' argument is required."
 
-    danger_id = _gen_id(scope, description)
+    danger_id = gen_id(scope, description)
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
         "INSERT OR IGNORE INTO dangers (id, scope, description, reason, added_by, created_at) "
@@ -62,7 +58,7 @@ def handle_add_decision(conn: sqlite3.Connection, repo_root: Path, arguments: di
     if not decision:
         return "Error: 'decision' argument is required."
 
-    decision_id = _gen_id(scope, decision)
+    decision_id = gen_id(scope, decision)
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
         "INSERT OR IGNORE INTO decisions (id, scope, decision, alternatives, reason, added_by, created_at) "

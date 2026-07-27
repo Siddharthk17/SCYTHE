@@ -1,10 +1,11 @@
-import hashlib
 import json
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+from ctx_engine.hashing import gen_id
 
 logger = logging.getLogger("ctx")
 
@@ -31,11 +32,6 @@ class HeuristicReport:
     removed: list[str] = field(default_factory=list)
 
 
-def _gen_id(*parts: str) -> str:
-    combined = "".join(parts)
-    return hashlib.sha256(combined.encode()).hexdigest()[:12]
-
-
 def detect_high_call_fanin(conn) -> list[DangerRecord]:
     rows = conn.execute(
         """SELECT callee_id, COUNT(*) as caller_count
@@ -54,7 +50,7 @@ def detect_high_call_fanin(conn) -> list[DangerRecord]:
         ).fetchone()
         if fn_row is None:
             continue
-        danger_id = _gen_id("call_fanin:", fn_row["id"])
+        danger_id = gen_id("call_fanin:", fn_row["id"])
         dangers.append(DangerRecord(
             id=danger_id,
             scope=fn_row["id"],
@@ -78,7 +74,7 @@ def detect_high_import_fanin(conn) -> list[DangerRecord]:
 
     dangers = []
     for row in rows:
-        danger_id = _gen_id("import_fanin:", row["path"])
+        danger_id = gen_id("import_fanin:", row["path"])
         dangers.append(DangerRecord(
             id=danger_id,
             scope=row["path"],
@@ -110,7 +106,7 @@ def detect_global_mutations(conn) -> list[DangerRecord]:
         if not global_vars:
             continue
         var_list = ", ".join(global_vars)
-        danger_id = _gen_id("global_mutation:", row["id"])
+        danger_id = gen_id("global_mutation:", row["id"])
         dangers.append(DangerRecord(
             id=danger_id,
             scope=row["id"],
@@ -157,7 +153,7 @@ def detect_invariant_comments(conn, repo_root: Path) -> list[DangerRecord]:
                 comment_lower = comment.lower()
                 if any(kw in comment_lower for kw in INVARIANT_KEYWORDS):
                     truncated = comment[:120] + ("..." if len(comment) > 120 else "")
-                    danger_id = _gen_id(
+                    danger_id = gen_id(
                         "invariant_comment:", fn_row["id"], ":", comment[:60]
                     )
                     dangers.append(DangerRecord(

@@ -3,6 +3,12 @@ import hashlib
 import json
 from tree_sitter import Node, Tree
 
+
+def gen_id(*parts: str) -> str:
+    combined = "".join(parts)
+    return hashlib.sha256(combined.encode()).hexdigest()[:12]
+
+
 def unescape_string(text: str) -> str:
     """Unescape standard backslash escape sequences in a string literal."""
     try:

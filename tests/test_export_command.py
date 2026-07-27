@@ -92,6 +92,15 @@ def test_ensure_gitattributes_idempotent(tmp_path):
     assert len(claude_lines) == 1
 
 
+def test_run_export_all_targets(export_db):
+    conn, repo = export_db
+    report = run_export(conn, repo, targets=None)
+    assert (repo / "CLAUDE.md").exists()
+    assert (repo / ".github" / "copilot-instructions.md").exists()
+    assert (repo / ".ctx" / "opencode.md").exists()
+    assert len(report.written) == 3
+
+
 def test_run_export_empty_db(tmp_path):
     db_path = tmp_path / ".ctx" / "index.db"
     db_path.parent.mkdir(exist_ok=True)

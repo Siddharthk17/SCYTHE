@@ -148,9 +148,12 @@ def run_sync(repo_root: Path, dry_run: bool = False) -> None:
     if not dry_run:
         try:
             export_report = run_export(conn, repo_root)
-            print(f"    wrote {export_report.written} file(s) to disk")
+            if export_report.written:
+                print(f"    wrote {len(export_report.written)} file(s) to disk")
+                for p in export_report.written:
+                    print(f"      {p}")
             if export_report.skipped:
-                print(f"    ({export_report.skipped} already current — skipped)")
+                print(f"    ({len(export_report.skipped)} already current — skipped)")
         except Exception as e:
             logger.error("Export failed: %s", e)
             print(f"    EXPORT FAILED: {e}")
@@ -161,8 +164,14 @@ def run_sync(repo_root: Path, dry_run: bool = False) -> None:
     print("  Phase 4: heuristic detection")
     if not dry_run:
         try:
-            heuristic_report = run_heuristic_detection(conn)
-            print(f"    detected {heuristic_report.total_alerts} danger zone(s) in {len(heuristic_report.detectors_run)} detector(s)")
+            heuristic_report = run_heuristic_detection(conn, repo_root)
+            added = len(heuristic_report.added)
+            removed = len(heuristic_report.removed)
+            if added or removed:
+                print(f"    {added} danger zone(s) added (auto)")
+                print(f"    {removed} stale danger zone(s) removed (auto)")
+            else:
+                print(f"    {len(heuristic_report.detected)} danger zone(s) detected — all current")
         except Exception as e:
             logger.error("Heuristic detection failed: %s", e)
             print(f"    HEURISTIC DETECTION FAILED: {e}")

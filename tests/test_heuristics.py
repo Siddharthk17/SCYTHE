@@ -27,7 +27,7 @@ def heur_db(tmp_path):
         encoding="utf-8",
     )
     (tmp_path / "bad.py").write_text(
-        "# FIXME: this is broken\n# TODO: fix later\n# HACK: temporary workaround\n\ndef bad_fn():\n    pass\n",
+        "def bad_fn():\n    # warning: this is broken\n    # must fix this\n    # critical edge case\n    pass\n",
         encoding="utf-8",
     )
 
@@ -55,12 +55,12 @@ def heur_db(tmp_path):
     conn.execute(
         "INSERT OR IGNORE INTO functions (id, file, name, signature, summary, summary_long, line_start, line_end, semantic_hash, confidence, is_stale, is_tainted, mutates, danger) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ("util.py:mutate", "util.py", "mutate", "def mutate()", "Mutates global", None, 3, 4, "sf2", 0.8, 0, 0, '["GLOBAL"]', None),
+        ("util.py:mutate", "util.py", "mutate", "def mutate()", "Mutates global", None, 3, 4, "sf2", 0.8, 0, 0, '["global:GLOBAL"]', None),
     )
     conn.execute(
         "INSERT OR IGNORE INTO functions (id, file, name, signature, summary, summary_long, line_start, line_end, semantic_hash, confidence, is_stale, is_tainted, mutates, danger) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ("bad.py:bad_fn", "bad.py", "bad_fn", "def bad_fn()", "Bad function", None, 5, 6, "sf3", 0.8, 0, 0, "[]", None),
+        ("bad.py:bad_fn", "bad.py", "bad_fn", "def bad_fn()", "Bad function", None, 1, 5, "sf3", 0.8, 0, 0, "[]", None),
     )
 
     conn.execute(
@@ -107,8 +107,9 @@ def test_detect_global_mutations(heur_db):
 def test_detect_invariant_comments(heur_db):
     conn, repo = heur_db
     results = detect_invariant_comments(conn, repo)
+    assert len(results) >= 1
     for r in results:
-        assert "comment" in r.description or "FIXME" in r.description or "TODO" in r.description or "invariant" in r.description.lower()
+        assert "invariant" in r.description.lower() or r.description.startswith("Invariant comment")
 
 
 def test_heuristic_snapshot_replacement(heur_db):

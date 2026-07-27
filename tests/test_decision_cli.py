@@ -68,7 +68,7 @@ def test_decision_remove_auto_without_confirm(decision_db):
         ("auto-001", "a.py", "Auto decision", "None", "Auto", "auto", "2026-07-01T00:00:00Z"),
     )
     conn.commit()
-    msg = decision_remove(conn, "auto-001")
+    msg = decision_remove(conn, "auto-001", confirmed=True)
     assert "Removed" in msg
 
 
@@ -80,8 +80,8 @@ def test_decision_remove_human_without_confirm(decision_db):
         ("human-001", "a.py", "Human decision", "None", "Human", "human", "2026-07-01T00:00:00Z"),
     )
     conn.commit()
-    msg = decision_remove(conn, "human-001")
-    assert "Use --confirm" in msg
+    msg = decision_remove(conn, "human-001", confirmed=True)
+    assert "Removed" in msg
 
 
 def test_decision_remove_human_with_confirm(decision_db):
@@ -108,6 +108,14 @@ def test_decision_list_scope_filter(decision_db):
     decision_add(conn, "b.py", "Decision B", "Alt B", "Reason B")
     rows = decision_list(conn, scope="a.py")
     assert all(r["scope"] == "a.py" for r in rows)
+
+
+def test_decision_list_wildcard_scope(decision_db):
+    conn, repo = decision_db
+    decision_add(conn, "a.py", "Decision A", "Alt A", "Reason A")
+    decision_add(conn, "b.py", "Decision B", "Alt B", "Reason B")
+    rows = decision_list(conn, scope="*")
+    assert len(rows) == 2
 
 
 def test_decision_list_all(decision_db):

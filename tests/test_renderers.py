@@ -133,3 +133,28 @@ def test_extract_snapshot_empty_db(tmp_path):
     assert snap.systems == []
     assert list(snap.global_dangers) == []
     assert list(snap.decisions) == []
+    render_claude_md(snap)
+    render_copilot_instructions(snap)
+    render_opencode_config(snap)
+
+
+def test_renderers_deterministic(render_db):
+    conn, repo = render_db
+    snap = extract_project_snapshot(conn, repo)
+    a = render_claude_md(snap)
+    b = render_claude_md(snap)
+    assert a == b
+    c = render_copilot_instructions(snap)
+    d = render_copilot_instructions(snap)
+    assert c == d
+    e = render_opencode_config(snap)
+    f = render_opencode_config(snap)
+    assert e == f
+
+
+def test_render_copilot_shorter_than_claude(render_db):
+    conn, repo = render_db
+    snap = extract_project_snapshot(conn, repo)
+    claude = render_claude_md(snap)
+    copilot = render_copilot_instructions(snap)
+    assert len(copilot) < len(claude)

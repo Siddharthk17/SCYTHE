@@ -1,10 +1,7 @@
-import hashlib
+import click
 from datetime import datetime, timezone
 
-
-def _gen_id(*parts: str) -> str:
-    combined = "".join(parts)
-    return hashlib.sha256(combined.encode()).hexdigest()[:12]
+from ctx_engine.hashing import gen_id
 
 
 def decision_add(
@@ -14,7 +11,7 @@ def decision_add(
     alternatives: str | None,
     reason: str,
 ) -> str:
-    decision_id = _gen_id(f"{scope or '*'}:{decision}")
+    decision_id = gen_id(f"{scope or '*'}:{decision}")
 
     conn.execute(
         """INSERT INTO decisions (id, scope, decision, alternatives, reason, added_by, created_at)
@@ -44,10 +41,10 @@ def decision_remove(conn, decision_id: str, confirmed: bool = False) -> str:
     if row is None:
         return f"No decision found with id '{decision_id}'."
 
-    if row["added_by"] == "human" and not confirmed:
-        return (
-            f"This decision was added by {row['added_by']}. "
-            f"Use --confirm to remove it."
+    if not confirmed:
+        click.confirm(
+            f"Remove decision '{decision_id}' ({row['decision']})?",
+            abort=True,
         )
 
     conn.execute("DELETE FROM decisions WHERE id = ?", (decision_id,))
@@ -56,10 +53,15 @@ def decision_remove(conn, decision_id: str, confirmed: bool = False) -> str:
 
 
 def decision_list(conn, scope: str | None = None) -> list[dict]:
-    if scope:
+    if scope == "*":
         rows = conn.execute(
             "SELECT id, scope, decision, alternatives, reason, added_by, created_at "
-            "FROM decisions WHERE scope = ? ORDER BY added_by DESC, rowid",
+            "FROM decisions WHERE scope IS NOT NULL ORDER BY added_by DESC, scope NULLS LAST, rowid"
+        ).fetchall()
+    elif scope:
+        rows = conn.execute(
+            "SELECT id, scope, decision, alternatives, reason, added_by, created_at "
+            "FROM decisions WHERE scope = ? ORDER BY added_by DESC, scope NULLS LAST, rowid",
             (scope,),
         ).fetchall()
     else:

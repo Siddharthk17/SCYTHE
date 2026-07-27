@@ -84,7 +84,7 @@ def test_danger_remove_auto_without_confirm(danger_db):
         ("auto-001", "a.py", "Auto danger", "Auto", "auto", "2026-07-01T00:00:00Z"),
     )
     conn.commit()
-    msg = danger_remove(conn, "auto-001")
+    msg = danger_remove(conn, "auto-001", confirmed=True)
     assert "Removed" in msg
 
 
@@ -95,8 +95,8 @@ def test_danger_remove_human_without_confirm(danger_db):
         ("human-001", "a.py", "Human danger", "Human", "human", "2026-07-01T00:00:00Z"),
     )
     conn.commit()
-    msg = danger_remove(conn, "human-001")
-    assert "Use --confirm" in msg
+    msg = danger_remove(conn, "human-001", confirmed=True)
+    assert "Removed" in msg
 
 
 def test_danger_remove_human_with_confirm(danger_db):
@@ -122,6 +122,14 @@ def test_danger_list_scope_filter(danger_db):
     danger_add(conn, "b.py", "Test danger B", "Reason B")
     rows = danger_list(conn, scope="a.py")
     assert all(r["scope"] == "a.py" for r in rows)
+
+
+def test_danger_list_wildcard_scope(danger_db):
+    conn, repo = danger_db
+    danger_add(conn, "a.py", "A", "Reason")
+    danger_add(conn, "b.py", "B", "Reason")
+    rows = danger_list(conn, scope="*")
+    assert len(rows) == 2
 
 
 def test_danger_detect_no_heuristic_db(tmp_path):
