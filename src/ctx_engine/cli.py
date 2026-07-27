@@ -31,10 +31,15 @@ def init_cmd(repo_root: Path) -> None:
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
     help="Path to the repository root directory."
 )
-def status_cmd(repo_root: Path) -> None:
+@click.option(
+    "--full",
+    is_flag=True,
+    help="Show full verbose status including table counts, call graph, and mtime cache."
+)
+def status_cmd(repo_root: Path, full: bool) -> None:
     """Display statistics and status of the indexed repository."""
     try:
-        run_status(repo_root.resolve())
+        run_status(repo_root.resolve(), full=full)
     except FileNotFoundError as err:
         click.echo(f"Error: {err}", err=True)
         raise click.Abort()
@@ -246,4 +251,341 @@ def watch_status_cmd(ctx: click.Context) -> None:
     """Show the file watcher daemon status."""
     from ctx_engine.commands.watch import run_watch_status
     run_watch_status(ctx.obj["repo_root"])
+
+
+# ── Week 6 commands ─────────────────────────────────────────────────────────
+
+
+@main.command(name="export")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+    help="Path to the repository root directory.",
+)
+@click.option("--claude", "targets", flag_value="claude", help="Only generate CLAUDE.md.")
+@click.option("--copilot", "targets", flag_value="copilot", help="Only generate copilot-instructions.md.")
+@click.option("--opencode", "targets", flag_value="opencode", help="Only generate .ctx/opencode.md.")
+@click.option("--all", "all_targets", is_flag=True, default=True, help="Generate all output files (default).")
+def export_cmd(repo_root: Path, targets: str | None, all_targets: bool) -> None:
+    """Generate output context files (CLAUDE.md, copilot-instructions.md, opencode.md)."""
+    from ctx_engine.db import connect
+    from ctx_engine.commands.export_cmd import run_export
+
+    db_path = repo_root.resolve() / ".ctx" / "index.db"
+    if not db_path.exists():
+        click.echo("Error: Database not found. Run 'ctx init' first.", err=True)
+        raise click.Abort()
+
+    conn = connect(db_path)
+    conn.row_factory = __import__("sqlite3").Row
+
+    if all_targets and targets is None:
+        target_set = {"claude", "copilot", "opencode"}
+    elif targets:
+        target_set = {targets}
+    else:
+        target_set = {"claude", "copilot", "opencode"}
+
+    try:
+        report = run_export(conn, repo_root.resolve(), targets=target_set)
+    finally:
+        conn.close()
+
+    if report.written:
+        click.echo("ctx export")
+        click.echo()
+        click.echo("  Written:")
+        for path in report.written:
+            click.echo(f"    {path}")
+        click.echo()
+        click.echo("  (run 'ctx export' again after 'ctx sync' to keep them current)")
+    else:
+        click.echo("ctx export")
+        click.echo()
+        click.echo("  All output files are current (no changes since last export).")
+
+
+@main.group(name="danger")
+def danger_group() -> None:
+    """Manage danger zones."""
+
+
+@danger_group.command(name="add")
+@click.argument("scope")
+@click.argument("description")
+@click.option("--reason", required=True, help="Why this is a danger zone.")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+def danger_add_cmd(scope: str, description: str, reason: str, repo_root: Path) -> None:
+    """Add a danger zone to the index."""
+    from ctx_engine.db import connect
+    from ctx_engine.commands.danger_cmd import danger_add
+
+    db_path = repo_root.resolve() / ".ctx" / "index.db"
+    if not db_path.exists():
+        click.echo("Error: Database not found. Run 'ctx init' first.", err=True)
+        raise click.Abort()
+
+    conn = connect(db_path)
+    try:
+        danger_id = danger_add(conn, scope, description, reason)
+    finally:
+        conn.close()
+
+    click.echo("ctx danger add")
+    click.echo()
+    click.echo(f"  Added danger zone: {danger_id}")
+    click.echo(f"  Scope: {scope}")
+    click.echo(f"  Description: {description}")
+    click.echo(f"  Reason: {reason}")
+    click.echo("  Added by: human")
+
+
+@danger_group.command(name="remove")
+@click.argument("danger_id")
+@click.option("--confirm", is_flag=True, help="Confirm removal of a human-added danger.")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+def danger_remove_cmd(danger_id: str, confirm: bool, repo_root: Path) -> None:
+    """Remove a danger zone by id."""
+    from ctx_engine.db import connect
+    from ctx_engine.commands.danger_cmd import danger_remove
+
+    db_path = repo_root.resolve() / ".ctx" / "index.db"
+    if not db_path.exists():
+        click.echo("Error: Database not found. Run 'ctx init' first.", err=True)
+        raise click.Abort()
+
+    conn = connect(db_path)
+    try:
+        result = danger_remove(conn, danger_id, confirmed=confirm)
+    finally:
+        conn.close()
+
+    click.echo(f"ctx danger remove {danger_id}")
+    click.echo()
+    click.echo(f"  {result}")
+
+
+@danger_group.command(name="list")
+@click.option("--scope", default=None, help="Filter by scope.")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+def danger_list_cmd(scope: str | None, repo_root: Path) -> None:
+    """List all danger zones."""
+    from ctx_engine.db import connect
+    from ctx_engine.commands.danger_cmd import danger_list
+
+    db_path = repo_root.resolve() / ".ctx" / "index.db"
+    if not db_path.exists():
+        click.echo("Error: Database not found. Run 'ctx init' first.", err=True)
+        raise click.Abort()
+
+    conn = connect(db_path)
+    try:
+        rows = danger_list(conn, scope=scope)
+    finally:
+        conn.close()
+
+    if not rows:
+        click.echo("No danger zones found.")
+        return
+
+    click.echo(f"ctx danger list")
+    click.echo()
+    click.echo(f"  DANGER ZONES ({len(rows)})")
+    click.echo()
+
+    for row in rows:
+        if row["scope"] == "*":
+            click.echo("  [GLOBAL]")
+        else:
+            click.echo(f"  [{row['scope']}]")
+        tag = row["added_by"]
+        click.echo(f"    id: {row['id']}")
+        click.echo(f"    {row['description']} ({tag})")
+        if row["reason"]:
+            click.echo(f"    Reason: {row['reason']}")
+        click.echo()
+
+
+@danger_group.command(name="detect")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option("--dry-run", is_flag=True, help="Preview detected dangers without writing.")
+def danger_detect_cmd(repo_root: Path, dry_run: bool) -> None:
+    """Auto-detect danger zones from code heuristics."""
+    from ctx_engine.db import connect
+    from ctx_engine.commands.danger_cmd import danger_detect
+
+    db_path = repo_root.resolve() / ".ctx" / "index.db"
+    if not db_path.exists():
+        click.echo("Error: Database not found. Run 'ctx init' first.", err=True)
+        raise click.Abort()
+
+    conn = connect(db_path)
+    try:
+        result = danger_detect(conn, repo_root.resolve(), dry_run=dry_run)
+    finally:
+        conn.close()
+
+    if dry_run:
+        click.echo("ctx danger detect --dry-run")
+        click.echo()
+        click.echo(f"  Would add {len(result['detected'])} danger zones (auto-detected):")
+        click.echo()
+        for d in result["detected"]:
+            click.echo(f"  [{d.scope}]")
+            click.echo(f"    \"{d.description}\"")
+            click.echo()
+        click.echo(f"  Would remove {len(result['removed'])} stale auto-detections.")
+        click.echo()
+        click.echo("  Run without --dry-run to apply.")
+    else:
+        click.echo("ctx danger detect")
+        click.echo()
+        click.echo(f"  {len(result['added'])} danger zones added (auto)")
+        click.echo(f"  {len(result['removed'])} stale danger zones removed (auto)")
+        click.echo()
+        click.echo(f"  Total auto-detected: {len(result['detected'])}")
+
+
+@main.group(name="decision")
+def decision_group() -> None:
+    """Manage architectural decisions."""
+
+
+@decision_group.command(name="add")
+@click.argument("decision")
+@click.option("--scope", default=None, help="Scope of the decision (file or module).")
+@click.option("--alternatives", default=None, help="Alternatives rejected.")
+@click.option("--reason", required=True, help="Why this decision was made.")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+def decision_add_cmd(decision: str, scope: str | None, alternatives: str | None, reason: str, repo_root: Path) -> None:
+    """Record an architectural decision."""
+    from ctx_engine.db import connect
+    from ctx_engine.commands.decision_cmd import decision_add
+
+    db_path = repo_root.resolve() / ".ctx" / "index.db"
+    if not db_path.exists():
+        click.echo("Error: Database not found. Run 'ctx init' first.", err=True)
+        raise click.Abort()
+
+    conn = connect(db_path)
+    try:
+        decision_id = decision_add(conn, scope, decision, alternatives, reason)
+    finally:
+        conn.close()
+
+    click.echo("ctx decision add")
+    click.echo()
+    click.echo(f"  Decision recorded: {decision_id}")
+    click.echo(f"  Scope: {scope or 'Global'}")
+    click.echo(f"  Decision: {decision}")
+    if alternatives:
+        click.echo(f"  Alternatives rejected: {alternatives}")
+    click.echo(f"  Reason: {reason}")
+    click.echo("  Added by: human")
+
+
+@decision_group.command(name="remove")
+@click.argument("decision_id")
+@click.option("--confirm", is_flag=True, help="Confirm removal of a human-added decision.")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+def decision_remove_cmd(decision_id: str, confirm: bool, repo_root: Path) -> None:
+    """Remove a decision by id."""
+    from ctx_engine.db import connect
+    from ctx_engine.commands.decision_cmd import decision_remove
+
+    db_path = repo_root.resolve() / ".ctx" / "index.db"
+    if not db_path.exists():
+        click.echo("Error: Database not found. Run 'ctx init' first.", err=True)
+        raise click.Abort()
+
+    conn = connect(db_path)
+    try:
+        result = decision_remove(conn, decision_id, confirmed=confirm)
+    finally:
+        conn.close()
+
+    click.echo(f"ctx decision remove {decision_id}")
+    click.echo()
+    click.echo(f"  {result}")
+
+
+@decision_group.command(name="list")
+@click.option("--scope", default=None, help="Filter by scope.")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+def decision_list_cmd(scope: str | None, repo_root: Path) -> None:
+    """List all architectural decisions."""
+    from ctx_engine.db import connect
+    from ctx_engine.commands.decision_cmd import decision_list
+
+    db_path = repo_root.resolve() / ".ctx" / "index.db"
+    if not db_path.exists():
+        click.echo("Error: Database not found. Run 'ctx init' first.", err=True)
+        raise click.Abort()
+
+    conn = connect(db_path)
+    try:
+        rows = decision_list(conn, scope=scope)
+    finally:
+        conn.close()
+
+    if not rows:
+        click.echo("No architectural decisions recorded.")
+        return
+
+    click.echo(f"ctx decision list")
+    click.echo()
+    click.echo(f"  ARCHITECTURAL DECISIONS ({len(rows)})")
+    click.echo()
+
+    for row in rows:
+        scope_str = row["scope"] or "Global"
+        tag = row["added_by"]
+        click.echo(f"  [{scope_str}]")
+        click.echo(f"    id: {row['id']}")
+        click.echo(f"    {row['decision']} ({tag})")
+        if row["alternatives"]:
+            click.echo(f"    Rejected: {row['alternatives']}")
+        click.echo(f"    Because: {row['reason']}")
+        click.echo()
+
+
+@main.command(name="quickstart")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+def quickstart_cmd(repo_root: Path) -> None:
+    """Print the 5-minute setup guide."""
+    from ctx_engine.commands.quickstart import run_quickstart
+    run_quickstart(repo_root.resolve())
 

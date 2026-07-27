@@ -14,6 +14,8 @@ from ctx_engine.intelligence.llm_client import (
     apply_summary_batch,
     SYSTEM_INSTRUCTION,
 )
+from ctx_engine.commands.export_cmd import run_export
+from ctx_engine.intelligence.heuristics import run_heuristic_detection
 
 logger = logging.getLogger("ctx")
 
@@ -140,6 +142,32 @@ def run_sync(repo_root: Path, dry_run: bool = False) -> None:
                 print(f"    [{i+1}/{len(batches)}] batch: {len(batch)} files, {batch_funcs_count} functions -> FAILED (skipped)")
 
         print()
+
+    # Phase 3: export context files
+    print("  Phase 3: export")
+    if not dry_run:
+        try:
+            export_report = run_export(conn, repo_root)
+            print(f"    wrote {export_report.written} file(s) to disk")
+            if export_report.skipped:
+                print(f"    ({export_report.skipped} already current — skipped)")
+        except Exception as e:
+            logger.error("Export failed: %s", e)
+            print(f"    EXPORT FAILED: {e}")
+    else:
+        print("    (skipped — dry run)")
+
+    # Phase 4: heuristic danger detection
+    print("  Phase 4: heuristic detection")
+    if not dry_run:
+        try:
+            heuristic_report = run_heuristic_detection(conn)
+            print(f"    detected {heuristic_report.total_alerts} danger zone(s) in {len(heuristic_report.detectors_run)} detector(s)")
+        except Exception as e:
+            logger.error("Heuristic detection failed: %s", e)
+            print(f"    HEURISTIC DETECTION FAILED: {e}")
+    else:
+        print("    (skipped — dry run)")
 
     conn.close()
 

@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from ctx_engine.commands.export_cmd import run_export
+
 logger = logging.getLogger("ctx")
 
 FUNCTION_SUMMARY_PROMPT = """You are updating a code index. Summarize this function in JSON.
@@ -104,6 +106,7 @@ class OllamaClient:
             conn = self._conn_factory()
             try:
                 self._summarize_functions(conn, file_path, function_ids)
+                run_export(conn, self._repo_root)
             except Exception as e:
                 logger.warning(
                     "Ollama summarization failed for %s: %s", file_path, e

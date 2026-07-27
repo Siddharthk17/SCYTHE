@@ -64,7 +64,7 @@ def populated_db(tmp_path):
 
 def test_status_basic_output(populated_db, capsys):
     """Verify that run_status prints all expected sections with correct counts."""
-    run_status(populated_db)
+    run_status(populated_db, full=True)
     out = capsys.readouterr().out
 
     assert "ctx status" in out
@@ -89,7 +89,7 @@ def test_status_basic_output(populated_db, capsys):
 
 def test_status_language_breakdown(populated_db, capsys):
     """Verify language counts appear in output."""
-    run_status(populated_db)
+    run_status(populated_db, full=True)
     out = capsys.readouterr().out
 
     assert "python" in out
@@ -98,7 +98,7 @@ def test_status_language_breakdown(populated_db, capsys):
 
 def test_status_stale_file_listing(populated_db, capsys):
     """Verify staleness section appears in the output."""
-    run_status(populated_db)
+    run_status(populated_db, full=True)
     out = capsys.readouterr().out
 
     assert "staleness" in out.lower()
@@ -106,7 +106,7 @@ def test_status_stale_file_listing(populated_db, capsys):
 
 def test_status_confidence_distribution(populated_db, capsys):
     """Verify confidence distribution reflects seeded function data."""
-    run_status(populated_db)
+    run_status(populated_db, full=True)
     out = capsys.readouterr().out
 
     assert "fresh" in out

@@ -20,6 +20,7 @@ from ctx_engine.reindex import (
     parse_one_file,
     run_reindex_pipeline,
 )
+from ctx_engine.commands.export_cmd import run_export
 
 logger = logging.getLogger("ctx")
 
@@ -116,6 +117,22 @@ def run_init(repo_root: Path) -> None:
     ambiguous_calls = conn.execute("SELECT count(*) FROM call_graph WHERE is_ambiguous = 1").fetchone()[0]
     unresolved_calls = conn.execute("SELECT count(*) FROM call_graph WHERE callee_id IS NULL").fetchone()[0]
 
+    # Auto-export after indexing — only if there's actually content
+    any_purpose = False
+    for row in conn.execute("SELECT purpose FROM files WHERE purpose IS NOT NULL LIMIT 3"):
+        if row[0]:
+            any_purpose = True
+            break
+
+    if any_purpose:
+        try:
+            export_report = run_export(conn, repo_root)
+        except Exception as e:
+            logger.warning("Auto-export failed: %s", e)
+            export_report = None
+    else:
+        export_report = None
+
     conn.close()
 
     total_time = time_module.time() - t_start
@@ -141,6 +158,9 @@ def run_init(repo_root: Path) -> None:
     print(f"  {len(dir_counts)} directories indexed")
     print()
     print("  .ctx/index.db ready (WAL mode)")
+
+    if export_report:
+        print(f"  export: {len(export_report.written)} file(s) written, {len(export_report.skipped)} already current")
 
     if to_skip and total_time > 0.5:
         avg_parse_time = total_time / max(1, len(to_parse)) if to_parse else 0.05
