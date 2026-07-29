@@ -70,3 +70,26 @@ def test_scripts_entry_point():
     content = pyproject.read_text(encoding="utf-8")
     assert "[project.scripts]" in content
     assert "ctx = " in content
+
+
+def test_subpackage_imports():
+    from ctx_engine import commands
+    assert commands is not None
+
+    from ctx_engine import db
+    assert db is not None
+
+    from ctx_engine import intelligence
+    assert intelligence is not None
+
+    from ctx_engine import languages
+    assert languages is not None
+
+    from ctx_engine import daemon
+    assert daemon is not None
+
+    from ctx_engine import mcp_server
+    assert mcp_server is not None
+
+    from ctx_engine.mcp_server.tools import renderers
+    assert renderers is not None

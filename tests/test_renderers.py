@@ -80,7 +80,12 @@ def test_render_claude_md(render_db):
     assert len(md) > 50
     assert repo.name in md
     assert "a.py" in md or "Test file A" in md
-    assert "#" in md
+    assert "## Architecture" in md
+    assert "## Danger Zones" in md
+    assert "## Architectural Decisions" in md
+    assert "## Index Health" in md
+    assert "## ctx Workflow" in md
+    assert "## Index Health" in md
 
 
 def test_render_copilot_instructions(render_db):
@@ -97,7 +102,8 @@ def test_render_opencode_config(render_db):
     md = render_opencode_config(snap)
     assert isinstance(md, str)
     assert len(md) > 20
-    assert "opencode" in md.lower() or "openCode" in md or "open_code" in md
+    assert "# OpenCode Context" in md
+    assert "workflow:" in md
 
 
 def test_render_generation_timestamp(render_db):
@@ -150,6 +156,43 @@ def test_renderers_deterministic(render_db):
     e = render_opencode_config(snap)
     f = render_opencode_config(snap)
     assert e == f
+
+
+@pytest.fixture
+def stale_render_db(tmp_path):
+    db_path = tmp_path / ".ctx" / "index.db"
+    db_path.parent.mkdir(exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    init_schema(conn)
+
+    conn.execute(
+        "INSERT OR IGNORE INTO files (path, semantic_hash, content_hash, purpose, summary, is_stale, confidence, danger, exports, imports, used_by, used_by_count) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("stale.py", "sh1", "ch1", "Stale file", "Stale", 1, 0.9, None, '["f"]', "[]", "[]", 0),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO functions (id, file, name, signature, summary, summary_long, line_start, line_end, semantic_hash, confidence, is_stale, is_tainted, mutates, danger) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("stale.py:f", "stale.py", "f", "def f()", "A function", None, 1, 1, "sf1", 0.8, 1, 1, "[]", None),
+    )
+    conn.commit()
+    return conn, tmp_path
+
+
+def test_render_claude_md_stale_warning(stale_render_db):
+    conn, repo = stale_render_db
+    snap = extract_project_snapshot(conn, repo)
+    md = render_claude_md(snap)
+    assert "⚠" in md
+    assert "run `ctx sync`" in md
+
+
+def test_render_claude_md_all_current(render_db):
+    conn, repo = render_db
+    snap = extract_project_snapshot(conn, repo)
+    md = render_claude_md(snap)
+    assert "✓ Index is current" in md
 
 
 def test_render_copilot_shorter_than_claude(render_db):
