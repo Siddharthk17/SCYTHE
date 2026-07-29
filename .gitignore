@@ -43,3 +43,7 @@ node_modules/
 
 # MCP config — generated per-workspace, user-specific
 .mcp.json
+
+.github/copilot-instructions.md
+.gitattributes
+CLAUDE.md
