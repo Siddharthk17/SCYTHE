@@ -112,10 +112,11 @@ def test_decision_list_scope_filter(decision_db):
 
 def test_decision_list_wildcard_scope(decision_db):
     conn, repo = decision_db
-    decision_add(conn, "a.py", "Decision A", "Alt A", "Reason A")
-    decision_add(conn, "b.py", "Decision B", "Alt B", "Reason B")
+    decision_add(conn, None, "Global decision", "Alt A", "Reason A")
+    decision_add(conn, "a.py", "File decision", "Alt B", "Reason B")
     rows = decision_list(conn, scope="*")
-    assert len(rows) == 2
+    assert len(rows) == 1
+    assert rows[0]["scope"] is None
 
 
 def test_decision_list_all(decision_db):

@@ -39,11 +39,15 @@ coverage/
 node_modules/
 
 # ctx index database — regenerable local index, never committed
+.ctx/index.db
+.ctx/index.db-wal
+.ctx/index.db-shm
 .ctx/
+
+# ctx ephemeral runtime files
+.ctx/watch.pid
+.ctx/watch.log
+.ctx/watch-state.json
 
 # MCP config — generated per-workspace, user-specific
 .mcp.json
-
-.github/copilot-instructions.md
-.gitattributes
-CLAUDE.md

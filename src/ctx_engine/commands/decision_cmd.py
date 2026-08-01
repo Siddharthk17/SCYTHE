@@ -41,9 +41,9 @@ def decision_remove(conn, decision_id: str, confirmed: bool = False) -> str:
     if row is None:
         return f"No decision found with id '{decision_id}'."
 
-    if not confirmed:
+    if row["added_by"] == "human" and not confirmed:
         click.confirm(
-            f"Remove decision '{decision_id}' ({row['decision']})?",
+            f"This is a human-added decision. Remove it?",
             abort=True,
         )
 
@@ -56,7 +56,7 @@ def decision_list(conn, scope: str | None = None) -> list[dict]:
     if scope == "*":
         rows = conn.execute(
             "SELECT id, scope, decision, alternatives, reason, added_by, created_at "
-            "FROM decisions WHERE scope IS NOT NULL ORDER BY added_by DESC, scope NULLS LAST, rowid"
+            "FROM decisions WHERE scope IS NULL ORDER BY added_by DESC, scope NULLS LAST, rowid"
         ).fetchall()
     elif scope:
         rows = conn.execute(

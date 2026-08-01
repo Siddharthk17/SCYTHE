@@ -1,5 +1,7 @@
 import sqlite3
+import time
 import pytest
+from datetime import datetime, timezone
 from pathlib import Path
 from ctx_engine.db import init_schema
 from ctx_engine.commands.export_cmd import run_export, _ensure_gitattributes
@@ -109,3 +111,21 @@ def test_run_export_empty_db(tmp_path):
     init_schema(conn)
     report = run_export(conn, tmp_path)
     assert (tmp_path / "CLAUDE.md").exists()
+
+
+def test_export_rewrites_after_db_change(export_db):
+    conn, repo = export_db
+    r1 = run_export(conn, repo)
+    assert len(r1.written) == 3
+
+    time.sleep(1)
+
+    conn.execute(
+        "UPDATE files SET updated_at = ? WHERE path = 'a.py'",
+        (datetime.now(timezone.utc).isoformat(),),
+    )
+    conn.commit()
+
+    r2 = run_export(conn, repo)
+    assert "CLAUDE.md" in r2.written
+    assert "CLAUDE.md" not in r2.skipped

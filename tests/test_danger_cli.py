@@ -126,10 +126,11 @@ def test_danger_list_scope_filter(danger_db):
 
 def test_danger_list_wildcard_scope(danger_db):
     conn, repo = danger_db
-    danger_add(conn, "a.py", "A", "Reason")
-    danger_add(conn, "b.py", "B", "Reason")
+    danger_add(conn, "*", "Global danger", "Reason")
+    danger_add(conn, "a.py", "File danger", "Reason")
     rows = danger_list(conn, scope="*")
-    assert len(rows) == 2
+    assert len(rows) == 1
+    assert rows[0]["scope"] == "*"
 
 
 def test_danger_detect_no_heuristic_db(tmp_path):

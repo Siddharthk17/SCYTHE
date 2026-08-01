@@ -34,9 +34,9 @@ def danger_remove(conn, danger_id: str, confirmed: bool = False) -> str:
     if row is None:
         return f"No danger zone found with id '{danger_id}'."
 
-    if not confirmed:
+    if row["added_by"] == "human" and not confirmed:
         click.confirm(
-            f"Remove danger zone '{danger_id}' ({row['description']})?",
+            f"This is a human-added danger. Remove it?",
             abort=True,
         )
 
@@ -49,7 +49,7 @@ def danger_list(conn, scope: str | None = None) -> list[dict]:
     if scope == "*":
         rows = conn.execute(
             "SELECT id, scope, description, reason, added_by, created_at FROM dangers "
-            "WHERE scope IS NOT NULL ORDER BY added_by DESC, rowid"
+            "WHERE scope = '*' ORDER BY added_by DESC, rowid"
         ).fetchall()
     elif scope:
         rows = conn.execute(

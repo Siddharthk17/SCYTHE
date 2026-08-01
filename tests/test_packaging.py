@@ -72,6 +72,14 @@ def test_scripts_entry_point():
     assert "ctx = " in content
 
 
+def test_entry_point_registered():
+    from importlib.metadata import entry_points
+    eps = entry_points(group="console_scripts")
+    ctx_eps = [ep for ep in eps if ep.name == "ctx"]
+    assert len(ctx_eps) == 1
+    assert ctx_eps[0].value == "ctx_engine.cli:main"
+
+
 def test_subpackage_imports():
     from ctx_engine import commands
     assert commands is not None
