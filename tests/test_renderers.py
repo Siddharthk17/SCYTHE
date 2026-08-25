@@ -117,6 +117,26 @@ def test_render_generation_timestamp(render_db):
     assert "T" in ts
 
 
+def test_render_generation_timestamp_comment_prefix(tmp_path):
+    """opencode.md stores its timestamp behind a '# ' prefix — still parseable."""
+    f = tmp_path / "opencode.md"
+    f.write_text(
+        "# <!-- Generated: 2026-06-14T14:05:14Z -->\n",
+        encoding="utf-8",
+    )
+    assert render_generation_timestamp(f) == "2026-06-14T14:05:14Z"
+
+
+def test_renderers_byte_identical_with_fixed_timestamp(render_db):
+    """With a fixed generation timestamp, output is byte-identical every call."""
+    conn, repo = render_db
+    snap = extract_project_snapshot(conn, repo)
+    fixed = "2026-06-14T14:05:14Z"
+    assert render_claude_md(snap, gen_ts=fixed) == render_claude_md(snap, gen_ts=fixed)
+    assert render_copilot_instructions(snap, gen_ts=fixed) == render_copilot_instructions(snap, gen_ts=fixed)
+    assert render_opencode_config(snap, gen_ts=fixed) == render_opencode_config(snap, gen_ts=fixed)
+
+
 def test_render_generation_timestamp_missing(tmp_path):
     ts = render_generation_timestamp(tmp_path / "nonexistent.md")
     assert ts is None

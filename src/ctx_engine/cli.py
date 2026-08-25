@@ -445,7 +445,8 @@ def danger_detect_cmd(repo_root: Path, dry_run: bool) -> None:
     if dry_run:
         click.echo("ctx danger detect --dry-run")
         click.echo()
-        click.echo(f"  Would add {len(result['detected'])} danger zones (auto-detected):")
+        click.echo(f"  Would add {len(result['added'])} new danger zones (auto-detected):")
+        click.echo(f"  Total detected on current code: {len(result['detected'])}")
         click.echo()
         for d in result["detected"]:
             click.echo(f"  [{d.scope}]")

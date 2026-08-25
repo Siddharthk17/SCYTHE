@@ -202,3 +202,16 @@ def test_sync_live_2_files_change(mock_call_llm, mock_get_client, sync_repo):
     assert remaining_stale == 0, f"Expected no stale functions, got {remaining_stale}"
 
     conn.close()
+
+
+@patch("ctx_engine.commands.sync.get_anthropic_client",
+       side_effect=ValueError("ANTHROPIC_API_KEY is not set. Required for 'ctx summarize' / 'ctx update'."))
+def test_sync_no_api_key_graceful(mock_get_client, sync_repo, capsys):
+    """A missing API key must not crash sync; export + heuristics still run."""
+    run_sync(sync_repo)
+    out = capsys.readouterr().out
+    assert "SKIPPED" in out
+    assert "ANTHROPIC_API_KEY" in out
+    assert "Phase 3: export" in out
+    assert "Phase 4" in out
+    assert (sync_repo / "CLAUDE.md").exists()

@@ -14,7 +14,10 @@ from ctx_engine.daemon.daemon import (
     remove_pid_file,
 )
 from ctx_engine.daemon.local_llm import is_ollama_available, get_available_models, select_model
-from ctx_engine.mcp_server.tools.renderers import render_generation_timestamp
+from ctx_engine.mcp_server.tools.renderers import (
+    render_generation_timestamp,
+    latest_index_timestamp,
+)
 
 
 def measure_query_timing(conn: sqlite3.Connection) -> dict[str, float]:
@@ -91,14 +94,7 @@ def _export_freshness(repo_root: Path, conn) -> dict[str, str]:
         ".github/copilot-instructions.md": "copilot",
         ".ctx/opencode.md": "opencode",
     }
-    latest_db_update = conn.execute(
-        "SELECT MAX(updated_at) FROM ("
-        "SELECT MAX(updated_at) as updated_at FROM files "
-        "UNION ALL SELECT MAX(updated_at) FROM functions "
-        "UNION ALL SELECT MAX(created_at) FROM dangers "
-        "UNION ALL SELECT MAX(created_at) FROM decisions"
-        ")"
-    ).fetchone()[0]
+    latest_db_update = latest_index_timestamp(conn)
 
     statuses = {}
     for file_path, _ in export_files.items():

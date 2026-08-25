@@ -112,34 +112,42 @@ def run_sync(repo_root: Path, dry_run: bool = False) -> None:
     else:
         print("  Phase 2: summarize")
 
-        client = get_anthropic_client()
-        model = get_model_name()
+        try:
+            client = get_anthropic_client()
+        except ValueError as e:
+            logger.error("Summarization skipped: %s", e)
+            print(f"    SKIPPED -- {e}")
+            print("    Set ANTHROPIC_API_KEY and re-run to summarize.")
+            client = None
 
         total_files_updated = 0
         total_funcs_updated = 0
         total_in_tokens = 0
         total_out_tokens = 0
 
-        for i, batch in enumerate(batches):
-            batch_funcs_count = sum(
-                1 for f in batch for func in f["functions"] if func["needs_summary"]
-            )
-            user_content = json.dumps(batch)
-            try:
-                response_text, in_tok, out_tok = call_llm_with_retry(
-                    client, model, SYSTEM_INSTRUCTION, user_content
-                )
-                parsed_results = parse_response(response_text)
-                files_up, funcs_up = apply_summary_batch(conn, parsed_results)
-                total_files_updated += files_up
-                total_funcs_updated += funcs_up
-                total_in_tokens += in_tok
-                total_out_tokens += out_tok
+        if client is not None:
+            model = get_model_name()
 
-                print(f"    [{i+1}/{len(batches)}] batch: {len(batch)} files, {batch_funcs_count} functions -> done (in: {in_tok:,} tok, out: {out_tok:,} tok)")
-            except Exception as e:
-                logger.error("Failed to process batch %d: %s", i + 1, e)
-                print(f"    [{i+1}/{len(batches)}] batch: {len(batch)} files, {batch_funcs_count} functions -> FAILED (skipped)")
+            for i, batch in enumerate(batches):
+                batch_funcs_count = sum(
+                    1 for f in batch for func in f["functions"] if func["needs_summary"]
+                )
+                user_content = json.dumps(batch)
+                try:
+                    response_text, in_tok, out_tok = call_llm_with_retry(
+                        client, model, SYSTEM_INSTRUCTION, user_content
+                    )
+                    parsed_results = parse_response(response_text)
+                    files_up, funcs_up = apply_summary_batch(conn, parsed_results)
+                    total_files_updated += files_up
+                    total_funcs_updated += funcs_up
+                    total_in_tokens += in_tok
+                    total_out_tokens += out_tok
+
+                    print(f"    [{i+1}/{len(batches)}] batch: {len(batch)} files, {batch_funcs_count} functions -> done (in: {in_tok:,} tok, out: {out_tok:,} tok)")
+                except Exception as e:
+                    logger.error("Failed to process batch %d: %s", i + 1, e)
+                    print(f"    [{i+1}/{len(batches)}] batch: {len(batch)} files, {batch_funcs_count} functions -> FAILED (skipped)")
 
         print()
 

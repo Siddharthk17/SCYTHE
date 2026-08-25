@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 
@@ -7,6 +8,8 @@ from ctx_engine.mcp_server.tools.renderers import (
     render_claude_md,
     render_copilot_instructions,
     render_opencode_config,
+    render_generation_timestamp,
+    latest_index_timestamp,
 )
 
 GITATTRIBUTES_ENTRIES = {
@@ -26,6 +29,14 @@ OUTPUT_FILES = {
 class ExportReport:
     written: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
+
+
+def _parse_ts(ts: str) -> datetime | None:
+    """Parse a ``<!-- Generated: ... -->`` ISO-8601 timestamp (Z-suffixed)."""
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
 
 
 def _ensure_gitattributes(repo_root: Path) -> None:
@@ -59,6 +70,14 @@ def run_export(
         targets = {"claude", "copilot", "opencode"}
 
     snapshot = extract_project_snapshot(conn, repo_root)
+
+    # One generation timestamp per export pass keeps all three files in lockstep
+    # and makes re-runs byte-idempotent: nothing is rewritten unless the database
+    # changed after the file's stored generation time.
+    gen_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    db_latest = latest_index_timestamp(conn)
+    db_dt = _parse_ts(db_latest) if db_latest else None
+
     written = []
     skipped = []
 
@@ -67,14 +86,25 @@ def run_export(
             continue
         rel_path, renderer = OUTPUT_FILES[target]
         path = repo_root / rel_path
-        content = renderer(snapshot)
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        if path.exists() and path.read_text(encoding="utf-8") == content:
-            skipped.append(str(path.relative_to(repo_root)))
-        else:
-            path.write_text(content, encoding="utf-8")
-            written.append(str(path.relative_to(repo_root)))
+        stored_ts = render_generation_timestamp(path)
+        stored_dt = _parse_ts(stored_ts) if stored_ts else None
+        db_changed = stored_dt is None or (db_dt is not None and stored_dt < db_dt)
+
+        if not db_changed:
+            # Database unchanged: only rewrite if a manual edit polluted the file.
+            try:
+                content = renderer(snapshot, gen_ts=stored_ts)
+                if path.exists() and path.read_text(encoding="utf-8") == content:
+                    skipped.append(str(path.relative_to(repo_root)))
+                    continue
+            except (IOError, OSError):
+                pass
+
+        content = renderer(snapshot, gen_ts=gen_ts)
+        path.write_text(content, encoding="utf-8")
+        written.append(str(path.relative_to(repo_root)))
 
     _ensure_gitattributes(repo_root)
 

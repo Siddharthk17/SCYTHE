@@ -183,7 +183,24 @@ def run_heuristic_detection(
     all_dangers.extend(detect_invariant_comments(conn, repo_root))
 
     if dry_run:
-        return HeuristicReport(detected=all_dangers, added=[], removed=[])
+        existing_auto = set(
+            row["id"] for row in conn.execute(
+                "SELECT id FROM dangers WHERE added_by = 'auto'"
+            ).fetchall()
+        )
+        new_ids = {d.id for d in all_dangers}
+        would_add = [d for d in all_dangers if d.id not in existing_auto]
+        stale_ids = sorted(existing_auto - new_ids)
+        would_remove = []
+        for stale_id in stale_ids:
+            row = conn.execute(
+                "SELECT description FROM dangers WHERE id = ?", (stale_id,)
+            ).fetchone()
+            if row:
+                would_remove.append(row["description"])
+        return HeuristicReport(
+            detected=all_dangers, added=would_add, removed=would_remove
+        )
 
     existing_auto = set(
         row["id"] for row in conn.execute(

@@ -279,3 +279,49 @@ def test_empty_db(tmp_path):
     init_schema(conn)
     report = run_heuristic_detection(conn, tmp_path)
     assert len(report.detected) == 0
+
+
+def test_dry_run_reports_delta(tmp_path):
+    """--dry-run reports true add/remove deltas without writing to the DB."""
+    db_path = tmp_path / ".ctx" / "index.db"
+    db_path.parent.mkdir(exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    init_schema(conn)
+
+    (tmp_path / "hot.py").write_text(
+        "def hot():\n    # must always flush\n    pass\n",
+        encoding="utf-8",
+    )
+    conn.execute(
+        "INSERT INTO files(path, semantic_hash, content_hash, used_by_count) "
+        "VALUES ('hot.py', 's', 'c', 0)"
+    )
+    conn.execute(
+        "INSERT INTO functions(id, file, name, signature, line_start, line_end, semantic_hash) "
+        "VALUES ('hot.py::hot', 'hot.py', 'hot', 'def hot()', 1, 3, 'sf')"
+    )
+
+    # One auto danger that matches a current detection (already present), and
+    # one stale auto danger that no longer corresponds to any detection.
+    live = detect_invariant_comments(conn, tmp_path)[0]
+    conn.execute(
+        "INSERT INTO dangers(id, scope, description, reason, added_by, created_at) "
+        "VALUES (?, ?, ?, ?, 'auto', ?)",
+        (live.id, live.scope, live.description, live.reason, "2026-07-01T00:00:00Z"),
+    )
+    conn.execute(
+        "INSERT INTO dangers(id, scope, description, reason, added_by, created_at) "
+        "VALUES ('stale-1', 'gone.py', 'Stale detection', 'gone', 'auto', '2026-07-01T00:00:00Z')"
+    )
+    conn.commit()
+
+    report = run_heuristic_detection(conn, tmp_path, dry_run=True)
+
+    # The live danger is not reported as "would add".
+    assert all(d.id != live.id for d in report.added)
+    # The stale auto danger is reported for removal.
+    assert len(report.removed) == 1
+    assert "Stale detection" in report.removed[0]
+    # Human/model untouched; nothing written at all.
+    assert conn.execute("SELECT COUNT(*) FROM dangers").fetchone()[0] == 2

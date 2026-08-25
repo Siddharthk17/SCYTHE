@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from ctx_engine.db import init_schema
 from ctx_engine.commands.export_cmd import run_export, _ensure_gitattributes
+from ctx_engine.mcp_server.tools.renderers import render_generation_timestamp
 
 
 @pytest.fixture
@@ -129,3 +130,48 @@ def test_export_rewrites_after_db_change(export_db):
     r2 = run_export(conn, repo)
     assert "CLAUDE.md" in r2.written
     assert "CLAUDE.md" not in r2.skipped
+
+
+def test_run_export_idempotent_across_seconds(export_db):
+    """Re-running export after >1s with no DB change must not rewrite files."""
+    conn, repo = export_db
+    r1 = run_export(conn, repo)
+    assert len(r1.written) == 3
+
+    mtime_before = {p: (repo / p).stat().st_mtime_ns for p in r1.written}
+
+    time.sleep(1.1)
+
+    r2 = run_export(conn, repo)
+    assert r2.written == []
+    assert len(r2.skipped) == 3
+
+    for p, mtime in mtime_before.items():
+        assert (repo / p).stat().st_mtime_ns == mtime, f"{p} was rewritten"
+
+
+def test_run_export_overwrites_manual_edit(export_db):
+    """Manually edited output artifacts are regenerated on the next export."""
+    conn, repo = export_db
+    run_export(conn, repo)
+
+    claude = repo / "CLAUDE.md"
+    claude.write_text(
+        claude.read_text(encoding="utf-8") + "\nMANUAL EDIT\n",
+        encoding="utf-8",
+    )
+
+    time.sleep(1.1)
+    report = run_export(conn, repo)
+    assert "CLAUDE.md" in report.written
+    assert "MANUAL EDIT" not in claude.read_text(encoding="utf-8")
+
+
+def test_run_export_writes_parseable_timestamps(export_db):
+    """Every rendered file carries a freshness-detectable generation timestamp."""
+    conn, repo = export_db
+    run_export(conn, repo)
+    for rel in ("CLAUDE.md", ".github/copilot-instructions.md", ".ctx/opencode.md"):
+        ts = render_generation_timestamp(repo / rel)
+        assert ts is not None, f"no parseable timestamp in {rel}"
+        datetime.fromisoformat(ts.replace("Z", "+00:00"))
