@@ -21,6 +21,8 @@ from ctx_engine.languages import (
     TypeScriptAdapter,
     GoAdapter,
     RustAdapter,
+    JavaAdapter,
+    CSharpAdapter,
 )
 from ctx_engine.languages.base import FileStructure, FunctionRecord
 from ctx_engine.languages.registry import get_parser, parse_file
@@ -38,6 +40,8 @@ ADAPTERS = {
     "tsx": TypeScriptAdapter(),
     "go": GoAdapter(),
     "rust": RustAdapter(),
+    "java": JavaAdapter(),
+    "csharp": CSharpAdapter(),
 }
 
 

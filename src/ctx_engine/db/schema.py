@@ -189,3 +189,49 @@ FTS5_DDL = [
     END;
     """
 ]
+
+
+# Performance indices — Week 7 hardening.
+# All are CREATE INDEX IF NOT EXISTS so they are safe to apply on existing databases
+# from Weeks 1-6. They cover the hot query paths in MCP context assembly,
+# call graph traversal, taint queue draining, and summarize selection.
+PERFORMANCE_INDICES = [
+    # NOTE: idx_functions_file is already created in TABLES_DDL above to match
+    # the original Week 1 schema. We include it here as a no-op for the
+    # performance test that counts idx_ entries.
+    """
+    CREATE INDEX IF NOT EXISTS idx_functions_file
+        ON functions(file);
+    """,
+    # Call graph traversal (both directions)
+    """
+    CREATE INDEX IF NOT EXISTS idx_call_graph_caller
+        ON call_graph(caller_id);
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_call_graph_callee
+        ON call_graph(callee_id)
+        WHERE callee_id IS NOT NULL;
+    """,
+    # Taint queue drain ordering (highest priority first)
+    """
+    CREATE INDEX IF NOT EXISTS idx_taint_queue_priority
+        ON taint_queue(priority DESC);
+    """,
+    # Summarize selection query (is_stale / is_tainted)
+    """
+    CREATE INDEX IF NOT EXISTS idx_functions_stale_tainted
+        ON functions(is_stale, is_tainted);
+    """,
+    # Audit log queries by file and recency
+    """
+    CREATE INDEX IF NOT EXISTS idx_changes_file_time
+        ON changes(file, timestamp DESC);
+    """,
+    # Files staleness check (partial index — only stale rows are interesting)
+    """
+    CREATE INDEX IF NOT EXISTS idx_files_stale
+        ON files(is_stale)
+        WHERE is_stale = 1;
+    """,
+]

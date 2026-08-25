@@ -1,5 +1,8 @@
 from pathlib import Path
 from ctx_engine.languages.base import ImportStatement
+from ctx_engine.languages.registry import get_parser
+from tree_sitter import Parser
+
 
 def get_go_module_name(repo_root: Path) -> str | None:
     """Extract the module name from the go.mod file at the repo root."""
@@ -14,6 +17,48 @@ def get_go_module_name(repo_root: Path) -> str | None:
                 return line.split("module ", 1)[1].strip()
     except Exception:
         pass
+    return None
+
+
+# Cache: maps a C# file path (relative to repo root) to its declared namespace.
+# C# files have a single namespace in the most common case (file-scoped or block).
+_csharp_namespace_cache: dict[str, str | None] = {}
+
+
+def _csharp_namespace_of(file_path: str, repo_root: Path | None = None) -> str | None:
+    """Read a C# file and return its first declared namespace, or None.
+
+    The result is cached per-process. C# allows multiple namespace declarations
+    in one file (nested or sibling), but for import-graph purposes the first one
+    is the most common single-namespace case.
+    """
+    if file_path in _csharp_namespace_cache:
+        return _csharp_namespace_cache[file_path]
+    if repo_root is None:
+        # Use the CWD-relative path
+        ns = _scan_csharp_namespace(Path(file_path))
+    else:
+        ns = _scan_csharp_namespace(repo_root / file_path)
+    _csharp_namespace_cache[file_path] = ns
+    return ns
+
+
+def _scan_csharp_namespace(abs_path: Path) -> str | None:
+    """Parse a C# file and return the first namespace_declaration's name."""
+    try:
+        source = abs_path.read_bytes()
+    except (IOError, OSError):
+        return None
+    try:
+        parser = get_parser("csharp")
+        tree = parser.parse(source)
+    except (ValueError, Exception):
+        return None
+    for child in tree.root_node.children:
+        if child.type in ("namespace_declaration", "file_scoped_namespace_declaration"):
+            name = child.child_by_field_name("name")
+            if name and name.text:
+                return name.text.decode("utf-8")
     return None
 
 def normalize_repo_path(base_dir: Path, rel_path_str: str) -> Path:
@@ -146,9 +191,15 @@ def resolve_file_imports(
     raw_imports: list[ImportStatement],
     files_set: set[str],
     exports_map: dict[str, list[str]],
-    go_module_name: str | None
+    go_module_name: str | None,
+    repo_root: Path | None = None,
+    files_languages: dict[str, str] | None = None,
 ) -> list[str]:
-    """Resolve raw imports of a file to repo-relative paths present in files_set."""
+    """Resolve raw imports of a file to repo-relative paths present in files_set.
+
+    `repo_root` and `files_languages` are required for Java and C# import
+    resolution; other languages ignore them.
+    """
     resolved = []
     current_dir = Path(current_file).parent
 
@@ -254,6 +305,57 @@ def resolve_file_imports(
         elif language == "rust":
             resolved.extend(resolve_rust_import(current_file, imp, files_set, exports_map))
 
+        elif language == "java":
+            # Java import paths use dots; we try the Maven/Gradle convention of
+            # 'src/main/java/' first, then 'src/', then the repo root.
+            # For each candidate root, also try without that root (handles projects
+            # without the src/main/java convention).
+            for prefix in (Path("src/main/java"), Path("src"), Path("")):
+                target = prefix
+                for part in imp.module.split("."):
+                    if part:
+                        target = target / part
+                cand = target.with_suffix(".java").as_posix()
+                if cand in files_set:
+                    resolved.append(cand)
+                    if "*" not in imp.names:
+                        break
+                elif repo_root is not None and (repo_root / target).is_dir():
+                    abs_target = repo_root / target
+                    if "*" in imp.names:
+                        # wildcard — every .java file in the package directory
+                        for f in files_set:
+                            f_path = Path(f)
+                            if f_path.parent.as_posix() == target.as_posix() and f_path.suffix == ".java":
+                                resolved.append(f)
+                        break
+                    else:
+                        # bare package import — link to every .java file in the package
+                        for f in files_set:
+                            f_path = Path(f)
+                            if f_path.parent.as_posix() == target.as_posix() and f_path.suffix == ".java":
+                                resolved.append(f)
+                        break
+
+        elif language == "csharp":
+            # C# 'using X;' is a namespace import. Resolve by scanning for any
+            # .cs file whose namespace matches the imported namespace (exact or
+            # prefix match). Common system namespaces (System.*, Microsoft.*) are
+            # treated as external and skipped.
+            if repo_root is None or files_languages is None:
+                continue
+            mod = imp.module
+            if mod.startswith("System") or mod.startswith("Microsoft"):
+                continue
+            for f, lang2 in files_languages.items():
+                if lang2 != "csharp":
+                    continue
+                ns = _csharp_namespace_of(f, repo_root)
+                if ns is None:
+                    continue
+                if ns == mod or ns.startswith(mod + "."):
+                    resolved.append(f)
+
     # Remove duplicates and self-imports
     return sorted(list(set([r for r in resolved if r != current_file])))
 
@@ -272,7 +374,10 @@ def resolve_imports_graph(
 
     for f, lang in files_languages.items():
         raw_imps = files_raw_imports.get(f, [])
-        resolved = resolve_file_imports(f, lang, raw_imps, files_set, files_exports, go_module_name)
+        resolved = resolve_file_imports(
+            f, lang, raw_imps, files_set, files_exports, go_module_name,
+            repo_root=repo_root, files_languages=files_languages,
+        )
         resolved_imports[f] = resolved
         for target in resolved:
             if target in used_by:

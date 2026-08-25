@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+import time
 from datetime import datetime
 from pathlib import Path
 from ctx_engine.db import connect
@@ -14,6 +15,51 @@ from ctx_engine.daemon.daemon import (
 )
 from ctx_engine.daemon.local_llm import is_ollama_available, get_available_models, select_model
 from ctx_engine.mcp_server.tools.renderers import render_generation_timestamp
+
+
+def measure_query_timing(conn: sqlite3.Connection) -> dict[str, float]:
+    """Time the hot query paths so `ctx status --full` can show index health.
+
+    Returns a dict mapping query name -> duration in milliseconds. All queries
+    are bounded to a sample of the data so a 100k-function DB does not produce
+    numbers dominated by sequential scans even without the performance indices.
+    """
+    timings: dict[str, float] = {}
+
+    sample = conn.execute(
+        "SELECT path FROM files ORDER BY rowid LIMIT 1"
+    ).fetchone()
+    if sample is None:
+        return timings
+    sample_path = sample["path"]
+
+    # Hot query 1: context assembly Zone 0 — all functions for a file
+    t0 = time.perf_counter()
+    conn.execute(
+        "SELECT * FROM functions WHERE file = ? ORDER BY line_start",
+        (sample_path,),
+    ).fetchall()
+    timings["functions_for_file_ms"] = (time.perf_counter() - t0) * 1000
+
+    # Hot query 2: call graph traversal — pull caller_ids for a sample
+    t0 = time.perf_counter()
+    conn.execute(
+        "SELECT callee_id FROM call_graph WHERE caller_id IN "
+        "(SELECT id FROM functions WHERE file = ? LIMIT 20)",
+        (sample_path,),
+    ).fetchall()
+    timings["call_graph_traversal_ms"] = (time.perf_counter() - t0) * 1000
+
+    # Hot query 3: summarize selection — files needing work
+    t0 = time.perf_counter()
+    conn.execute(
+        "SELECT DISTINCT f.path FROM files f WHERE f.purpose IS NULL "
+        "OR f.is_stale = 1 OR EXISTS "
+        "(SELECT 1 FROM functions fn WHERE fn.file = f.path AND fn.is_tainted = 1)"
+    ).fetchall()
+    timings["summarize_selection_ms"] = (time.perf_counter() - t0) * 1000
+
+    return timings
 
 
 def _hook_status(git_dir: Path, name: str, expected_content: str) -> str:
@@ -202,6 +248,14 @@ def run_status(repo_root: Path, full: bool = False) -> None:
         "SELECT MAX(updated_at) FROM files"
     ).fetchone()[0] or "never"
 
+    # Week 7: measure performance of hot query paths (only when --full).
+    query_timings: dict[str, float] = {}
+    if full:
+        try:
+            query_timings = measure_query_timing(conn)
+        except sqlite3.OperationalError:
+            pass
+
     conn.close()
 
     repo_name = repo_root.name
@@ -328,3 +382,11 @@ def run_status(repo_root: Path, full: bool = False) -> None:
         print("  mcp server:")
         print(f"    config: {mcp_config_status}")
         print("    last connection: (no connection log yet — connects on demand)")
+        if query_timings:
+            print()
+            print("  performance (query timing):")
+            for name, ms in query_timings.items():
+                # 10ms is the warning threshold. Below 5ms is the healthy range
+                # with the Week 7 indices in place.
+                marker = "  ⚠" if ms > 10 else ""
+                print(f"    {name:30}: {ms:.2f}ms{marker}")

@@ -5,6 +5,8 @@ from ctx_engine.languages.javascript_adapter import JavaScriptAdapter
 from ctx_engine.languages.typescript_adapter import TypeScriptAdapter
 from ctx_engine.languages.go_adapter import GoAdapter
 from ctx_engine.languages.rust_adapter import RustAdapter
+from ctx_engine.languages.java_adapter import JavaAdapter
+from ctx_engine.languages.csharp_adapter import CSharpAdapter
 
 __all__ = [
     "LanguageAdapter",
@@ -19,4 +21,6 @@ __all__ = [
     "TypeScriptAdapter",
     "GoAdapter",
     "RustAdapter",
+    "JavaAdapter",
+    "CSharpAdapter",
 ]

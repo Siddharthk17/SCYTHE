@@ -14,6 +14,8 @@ EXTENSION_TO_LANGUAGE: dict[str, str] = {
     ".tsx": "tsx",
     ".go": "go",
     ".rs": "rust",
+    ".java": "java",
+    ".cs": "csharp",
 }
 
 def assert_inside_git_repo(repo_root: Path) -> None:

@@ -589,3 +589,94 @@ def quickstart_cmd(repo_root: Path) -> None:
     from ctx_engine.commands.quickstart import run_quickstart
     run_quickstart(repo_root.resolve())
 
+
+# ── Week 7 commands ───────────────────────────────────────────────────────────
+
+
+@main.command(name="doctor")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option("--fix", "apply_fix", is_flag=True, help="Apply auto-fixes for failing checks.")
+@click.option("--json", "json_output", is_flag=True, help="Emit a machine-readable JSON report.")
+def doctor_cmd(repo_root: Path, apply_fix: bool, json_output: bool) -> None:
+    """Run a comprehensive health check of the index, hooks, and environment."""
+    from ctx_engine.commands.doctor import run_doctor
+    try:
+        exit_code = run_doctor(repo_root.resolve(), apply_fix=apply_fix, json_output=json_output)
+    except Exception as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
+    # Use sys.exit so the exit code is preserved without click.Abort() noise.
+    import sys
+    sys.exit(exit_code)
+
+
+@main.command(name="diff")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.argument("commit1", required=False)
+@click.argument("commit2", required=False)
+def diff_cmd(repo_root: Path, commit1: str | None, commit2: str | None) -> None:
+    """Show what changed in the index.
+
+    With no arguments: compares on-disk code against the indexed state.
+    With two commits: shows what the changes table records between them.
+    """
+    from ctx_engine.commands.diff_cmd import run_diff
+    try:
+        run_diff(repo_root.resolve(), commit1, commit2)
+    except (FileNotFoundError, ValueError) as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
+
+
+@main.command(name="ci")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit a machine-readable JSON report.")
+@click.option(
+    "--output-workflow", is_flag=True,
+    help="Write a reusable .github/workflows/ctx-validate.yml file.",
+)
+def ci_cmd(repo_root: Path, json_output: bool, output_workflow: bool) -> None:
+    """CI-mode validation: check that changed files are indexed and logged."""
+    from ctx_engine.commands.ci_cmd import run_ci
+    try:
+        exit_code = run_ci(repo_root.resolve(), json_output=json_output, output_workflow=output_workflow)
+    except (FileNotFoundError, ValueError) as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
+    if exit_code != 0 and not json_output:
+        raise click.Abort()
+
+
+@main.command(name="explain")
+@click.argument("target")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option(
+    "--depth", type=click.Choice(["function", "file", "system"]),
+    default=None,
+    help="Force a specific explanation depth. Defaults are inferred from the target.",
+)
+def explain_cmd(target: str, repo_root: Path, depth: str | None) -> None:
+    """Generate a deep, structured explanation of a file, function, or system."""
+    from ctx_engine.commands.explain_cmd import run_explain
+    try:
+        run_explain(repo_root.resolve(), target, depth=depth)
+    except (FileNotFoundError, ValueError) as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
+

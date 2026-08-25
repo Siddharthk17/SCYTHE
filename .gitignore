@@ -43,6 +43,7 @@ node_modules/
 .ctx/index.db-wal
 .ctx/index.db-shm
 .ctx/
+.ctx/opencode.md
 
 # ctx ephemeral runtime files
 .ctx/watch.pid
@@ -51,3 +52,5 @@ node_modules/
 
 # MCP config — generated per-workspace, user-specific
 .mcp.json
+CLAUDE.md
+.github/copilot-instructions.md

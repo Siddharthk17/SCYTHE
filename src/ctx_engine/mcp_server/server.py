@@ -8,7 +8,7 @@ from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent, CallToolResult, ServerCapabilities, ToolsCapability
 
-from ctx_engine.db.connection import connect
+from ctx_engine.db.connection import connect, get_pooled_connection
 from ctx_engine.mcp_server.tools.read_tools import (
     handle_get_context,
     handle_get_function,
@@ -318,7 +318,7 @@ def create_server(repo_root: Path) -> Server:
                 isError=True,
             )
 
-        conn = connect(db_path)
+        conn = get_pooled_connection(db_path)
         try:
             result_text = handler(conn, repo_root, arguments)
             return CallToolResult(content=[TextContent(type="text", text=result_text)])
@@ -330,11 +330,9 @@ def create_server(repo_root: Path) -> Server:
                 content=[TextContent(type="text", text=f"Error executing {name}: {err}")],
                 isError=True,
             )
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        # NOTE: pooled connection is intentionally NOT closed per-call.
+        # It lives for the lifetime of the thread (the MCP request handler).
+        # WAL mode keeps readers and writers from blocking each other.
 
     return app
 

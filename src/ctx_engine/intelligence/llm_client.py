@@ -46,7 +46,8 @@ def call_llm_with_retry(
     client: anthropic.Anthropic,
     model: str,
     system_prompt: str,
-    user_content: str
+    user_content: str,
+    max_tokens: int = 4000,
 ) -> tuple[str, int, int]:
     """Call the Anthropic API with retry and exponential backoff on transient errors.
 
@@ -59,7 +60,7 @@ def call_llm_with_retry(
         try:
             message = client.messages.create(
                 model=model,
-                max_tokens=4000,
+                max_tokens=max_tokens,
                 system=system_prompt,
                 messages=[
                     {"role": "user", "content": user_content}

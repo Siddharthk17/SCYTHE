@@ -133,6 +133,13 @@ def run_init(repo_root: Path) -> None:
     else:
         export_report = None
 
+    # Week 7: update SQLite query planner statistics on every init.
+    # Takes < 100ms and makes subsequent queries noticeably faster.
+    try:
+        conn.execute("PRAGMA optimize;")
+    except sqlite3.OperationalError:
+        pass
+
     conn.close()
 
     total_time = time_module.time() - t_start
