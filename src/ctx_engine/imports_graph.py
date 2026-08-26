@@ -1,7 +1,7 @@
 from pathlib import Path
+
 from ctx_engine.languages.base import ImportStatement
 from ctx_engine.languages.registry import get_parser
-from tree_sitter import Parser
 
 
 def get_go_module_name(repo_root: Path) -> str | None:
@@ -20,26 +20,32 @@ def get_go_module_name(repo_root: Path) -> str | None:
     return None
 
 
-# Cache: maps a C# file path (relative to repo root) to its declared namespace.
-# C# files have a single namespace in the most common case (file-scoped or block).
-_csharp_namespace_cache: dict[str, str | None] = {}
+# Cache: maps (absolute path, mtime_ns, size) of a C# file to its declared
+# namespace. C# files have a single namespace in the most common case
+# (file-scoped or block). The stat fingerprint guards against stale entries
+# when a file changes between passes in the same process (e.g. ctx update
+# after ctx init) or when the same relative path exists in different repos.
+_csharp_namespace_cache: dict[tuple[str, int, int], str | None] = {}
 
 
 def _csharp_namespace_of(file_path: str, repo_root: Path | None = None) -> str | None:
     """Read a C# file and return its first declared namespace, or None.
 
-    The result is cached per-process. C# allows multiple namespace declarations
-    in one file (nested or sibling), but for import-graph purposes the first one
-    is the most common single-namespace case.
+    The result is cached per-process and invalidated when the file's mtime or
+    size changes. C# allows multiple namespace declarations in one file
+    (nested or sibling), but for import-graph purposes the first one is the
+    most common single-namespace case.
     """
-    if file_path in _csharp_namespace_cache:
-        return _csharp_namespace_cache[file_path]
-    if repo_root is None:
-        # Use the CWD-relative path
-        ns = _scan_csharp_namespace(Path(file_path))
-    else:
-        ns = _scan_csharp_namespace(repo_root / file_path)
-    _csharp_namespace_cache[file_path] = ns
+    abs_path = Path(file_path) if repo_root is None else repo_root / file_path
+    try:
+        st = abs_path.stat()
+        key = (str(abs_path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+    if key in _csharp_namespace_cache:
+        return _csharp_namespace_cache[key]
+    ns = _scan_csharp_namespace(abs_path)
+    _csharp_namespace_cache[key] = ns
     return ns
 
 
@@ -52,7 +58,7 @@ def _scan_csharp_namespace(abs_path: Path) -> str | None:
     try:
         parser = get_parser("csharp")
         tree = parser.parse(source)
-    except (ValueError, Exception):
+    except Exception:
         return None
     for child in tree.root_node.children:
         if child.type in ("namespace_declaration", "file_scoped_namespace_declaration"):
@@ -321,7 +327,6 @@ def resolve_file_imports(
                     if "*" not in imp.names:
                         break
                 elif repo_root is not None and (repo_root / target).is_dir():
-                    abs_target = repo_root / target
                     if "*" in imp.names:
                         # wildcard — every .java file in the package directory
                         for f in files_set:

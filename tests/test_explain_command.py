@@ -1,7 +1,4 @@
 """Tests for the `ctx explain` command (LLM calls are mocked)."""
-import json
-import os
-import sqlite3
 import subprocess
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -10,14 +7,11 @@ import pytest
 
 from ctx_engine.commands.explain_cmd import (
     _classify_target,
-    _dangers_for_file,
-    _decisions_for_file,
     _estimate_cost,
     _resolve_explain_model,
-    ExplainTarget,
     run_explain,
 )
-from ctx_engine.db import connect, init_schema
+from ctx_engine.db import connect
 from ctx_engine.commands import run_init
 
 

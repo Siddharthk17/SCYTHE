@@ -1,6 +1,4 @@
 """Tests for the `ctx diff` command (both modes)."""
-import json
-import sqlite3
 import subprocess
 from pathlib import Path
 

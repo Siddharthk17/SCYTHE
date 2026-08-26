@@ -2,7 +2,6 @@
 import sqlite3
 import time
 import threading
-from pathlib import Path
 
 import pytest
 
@@ -175,6 +174,6 @@ def test_connection_pool_close_is_safe(tmp_path):
     db_path = tmp_path / "index.db"
     close_pooled_connection()  # no conn yet
     close_pooled_connection()  # twice
-    conn = get_pooled_connection(db_path)
+    get_pooled_connection(db_path)  # create a pooled conn (side effect, binding unused)
     close_pooled_connection()  # with a conn
     close_pooled_connection()  # again

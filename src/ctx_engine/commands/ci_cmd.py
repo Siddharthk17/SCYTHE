@@ -5,7 +5,6 @@ pass/fail result suitable for blocking a PR. Emits machine-readable JSON
 for the CI pipeline to consume.
 """
 import difflib
-import hashlib
 import json
 import os
 import sqlite3
@@ -19,7 +18,6 @@ from ctx_engine.discovery import discover_parseable_files
 from ctx_engine.hashing import file_content_hash, file_semantic_hash
 from ctx_engine.languages.registry import get_parser
 from ctx_engine.mcp_server.tools.renderers import render_generation_timestamp
-from ctx_engine.reindex import ADAPTERS
 
 WORKFLOW_TEMPLATE = """name: ctx validate
 
@@ -229,6 +227,18 @@ def _check_confidence(conn: sqlite3.Connection) -> dict:
     }
 
 
+def _normalize_ts(value: str) -> datetime:
+    """Parse an ISO timestamp and drop sub-second precision.
+
+    Export generation timestamps are second-precision while DB updated_at
+    values carry microseconds. Normalizing both sides to whole seconds
+    prevents a fresh export (generated within the same second as the last
+    index write) from being flagged stale.
+    """
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return dt.replace(microsecond=0)
+
+
 def _check_export_fresh(repo_root: Path, conn: sqlite3.Connection) -> dict:
     """If CLAUDE.md exists, check it isn't stale relative to the DB."""
     p = repo_root / "CLAUDE.md"
@@ -248,8 +258,8 @@ def _check_export_fresh(repo_root: Path, conn: sqlite3.Connection) -> dict:
     if not latest:
         return {"passed": True}
     try:
-        gen_dt = datetime.fromisoformat(gen_ts.replace("Z", "+00:00"))
-        db_dt = datetime.fromisoformat(latest.replace("Z", "+00:00"))
+        gen_dt = _normalize_ts(gen_ts)
+        db_dt = _normalize_ts(latest)
     except (ValueError, TypeError):
         return {"passed": True, "detail": "(timestamp parse error)"}
     return {"passed": gen_dt >= db_dt}

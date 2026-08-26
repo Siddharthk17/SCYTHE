@@ -1,6 +1,5 @@
 """Tests for `ctx doctor` health-check command."""
 import json
-import os
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -10,10 +9,8 @@ import pytest
 from ctx_engine.commands.doctor import (
     _collect_checks,
     run_doctor,
-    CheckResult,
     EXPECTED_PERF_INDICES,
 )
-from ctx_engine.commands.install_hooks import POST_COMMIT_HOOK, PRE_COMMIT_HOOK
 from ctx_engine.db import init_schema
 
 

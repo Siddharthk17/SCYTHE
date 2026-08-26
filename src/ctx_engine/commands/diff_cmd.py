@@ -349,12 +349,7 @@ def _print_audit_diff(report: AuditReport, repo_root: Path) -> None:
     if human_commits:
         print(f"  HUMAN commits ({len(human_commits)}):")
         for c in human_commits:
-            short = next(iter(by_commit))
-            short_hash = None
-            for h, info in by_commit.items():
-                if info is c:
-                    short_hash = h[:7]
-                    break
+            short_hash = next(h[:7] for h, info in by_commit.items() if info is c)
             print(f"    {short_hash}  \"{c['summary']}\"")
             for f in c["files"]:
                 print(f"      - {f}")
@@ -363,11 +358,7 @@ def _print_audit_diff(report: AuditReport, repo_root: Path) -> None:
     if model_commits:
         print(f"  MODEL commits ({len(model_commits)}):")
         for c in model_commits:
-            short_hash = None
-            for h, info in by_commit.items():
-                if info is c:
-                    short_hash = h[:7]
-                    break
+            short_hash = next(h[:7] for h, info in by_commit.items() if info is c)
             print(f"    {short_hash}  \"{c['summary']}\"")
             for f in c["files"]:
                 print(f"      - {f}    \u2190 AI-authored via ctx_log_change")
@@ -376,11 +367,7 @@ def _print_audit_diff(report: AuditReport, repo_root: Path) -> None:
     if other_commits:
         print(f"  OTHER commits ({len(other_commits)}):")
         for c in other_commits:
-            short_hash = None
-            for h, info in by_commit.items():
-                if info is c:
-                    short_hash = h[:7]
-                    break
+            short_hash = next(h[:7] for h, info in by_commit.items() if info is c)
             print(f"    {short_hash}  \"{c['summary']}\"  (author: {c['author']})")
             for f in c["files"]:
                 print(f"      - {f}")

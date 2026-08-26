@@ -9,14 +9,12 @@ import logging
 import os
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 
 from ctx_engine.db import connect
 from ctx_engine.intelligence.llm_client import (
     call_llm_with_retry,
     get_anthropic_client,
-    get_model_name,
 )
 
 logger = logging.getLogger("ctx")

@@ -1,6 +1,6 @@
 """`ctx doctor` — comprehensive health check with auto-fixes for common issues.
 
-Runs a fixed checklist of 21 health checks grouped into 7 categories and prints
+Runs a fixed checklist of 36 health checks grouped into 7 categories and prints
 a color-coded pass/fail report. With --fix, applies safe automated fixes for
 issues that have a known remediation. With --json, emits a machine-readable
 report for CI pipelines and the MCP server.
@@ -23,7 +23,6 @@ from ctx_engine.commands.install_hooks import (
     run_install_hooks,
 )
 from ctx_engine.db.schema import PERFORMANCE_INDICES
-from ctx_engine.discovery import assert_inside_git_repo
 from ctx_engine.mcp_server.tools.renderers import render_generation_timestamp
 
 # Performance indices we expect to exist. The names match the create-statement
@@ -50,6 +49,20 @@ OLLAMA_PREFERRED_MODELS = (
     "deepseek-coder:6.7b",
     "llama3.1:8b",
 )
+
+
+def _normalize_ts(value: str) -> datetime:
+    """Parse an ISO timestamp and drop sub-second precision.
+
+    Export generation timestamps are second-precision (rendered as
+    '%Y-%m-%dT%H:%M:%SZ'), while DB updated_at/created_at values carry
+    microseconds. Comparing raw values would flag a perfectly fresh export
+    as stale whenever it was generated within the same second the index was
+    last written. Normalizing both sides to whole seconds eliminates the
+    false-stale artifact while keeping the freshness guarantee intact.
+    """
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return dt.replace(microsecond=0)
 
 
 @dataclass
@@ -568,8 +581,8 @@ def _check_claude_md_fresh(repo_root: Path) -> CheckResult:
     if not latest:
         return CheckResult("F2", "Output Files", "CLAUDE.md is current", True)
     try:
-        gen_dt = datetime.fromisoformat(gen_ts.replace("Z", "+00:00"))
-        db_dt = datetime.fromisoformat(latest.replace("Z", "+00:00"))
+        gen_dt = _normalize_ts(gen_ts)
+        db_dt = _normalize_ts(latest)
     except (ValueError, TypeError) as err:
         return CheckResult("F2", "Output Files", "CLAUDE.md is current", False, f"timestamp parse: {err}")
     if gen_dt >= db_dt:
