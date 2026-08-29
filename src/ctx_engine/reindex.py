@@ -23,6 +23,7 @@ from ctx_engine.languages import (
     RustAdapter,
     JavaAdapter,
     CSharpAdapter,
+    KotlinAdapter,
 )
 from ctx_engine.languages.base import FileStructure, FunctionRecord
 from ctx_engine.languages.registry import get_parser, parse_file
@@ -42,6 +43,7 @@ ADAPTERS = {
     "rust": RustAdapter(),
     "java": JavaAdapter(),
     "csharp": CSharpAdapter(),
+    "kotlin": KotlinAdapter(),
 }
 
 

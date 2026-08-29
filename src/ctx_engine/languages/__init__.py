@@ -7,6 +7,7 @@ from ctx_engine.languages.go_adapter import GoAdapter
 from ctx_engine.languages.rust_adapter import RustAdapter
 from ctx_engine.languages.java_adapter import JavaAdapter
 from ctx_engine.languages.csharp_adapter import CSharpAdapter
+from ctx_engine.languages.kotlin_adapter import KotlinAdapter
 
 __all__ = [
     "LanguageAdapter",
@@ -23,4 +24,5 @@ __all__ = [
     "RustAdapter",
     "JavaAdapter",
     "CSharpAdapter",
+    "KotlinAdapter",
 ]

@@ -681,3 +681,148 @@ def explain_cmd(target: str, repo_root: Path, depth: str | None) -> None:
         click.echo(f"Error: {err}", err=True)
         raise click.Abort()
 
+
+# ── Week 8 commands ───────────────────────────────────────────────────────────
+
+
+@main.command(name="review")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option("--staged", is_flag=True, default=False, help="Review staged changes (default mode).")
+@click.option("--range", "range_expr", default=None, help="Git commit range to review, e.g. HEAD~3..HEAD.")
+@click.option("--file", "file_path", default=None, help="Review changes to a specific file.")
+@click.option("--no-llm", is_flag=True, default=False, help="Structural-only report with zero API calls.")
+def review_cmd(repo_root: Path, staged: bool, range_expr: str | None,
+               file_path: str | None, no_llm: bool) -> None:
+    """AI-assisted code review with full structural awareness of the index."""
+    from ctx_engine.commands.review_cmd import run_review
+    try:
+        run_review(repo_root.resolve(), staged=staged, range_expr=range_expr,
+                   file_path=file_path, no_llm=no_llm)
+    except (FileNotFoundError, ValueError) as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
+
+
+@main.command(name="push")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+def push_cmd(repo_root: Path) -> None:
+    """Export human-curated metadata to .ctx/shared-metadata.json."""
+    from ctx_engine.commands.push_cmd import push_metadata, print_push_report
+    from ctx_engine.db import connect
+    root = repo_root.resolve()
+    db_path = root / ".ctx" / "index.db"
+    if not db_path.exists():
+        click.echo("Error: Database not found. Run 'ctx init' first.", err=True)
+        raise click.Abort()
+    conn = connect(db_path)
+    try:
+        result = push_metadata(conn, root)
+    finally:
+        conn.close()
+    print_push_report(root, result)
+
+
+@main.command(name="pull")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option("--dry-run", is_flag=True, default=False, help="Preview the import without applying it.")
+@click.option("--overwrite-human", is_flag=True, default=False,
+              help="On conflict, prefer the shared version over the local human record.")
+def pull_cmd(repo_root: Path, dry_run: bool, overwrite_human: bool) -> None:
+    """Import team-shared metadata into the local index database."""
+    from ctx_engine.commands.pull_cmd import pull_metadata, print_pull_report, SharedMetadataError
+    from ctx_engine.commands.export_cmd import run_export
+    from ctx_engine.db import connect
+    root = repo_root.resolve()
+    db_path = root / ".ctx" / "index.db"
+    if not db_path.exists():
+        click.echo("Error: Database not found. Run 'ctx init' first.", err=True)
+        raise click.Abort()
+    conn = connect(db_path)
+    try:
+        try:
+            result = pull_metadata(conn, root, overwrite_human=overwrite_human)
+        except SharedMetadataError as err:
+            click.echo(f"Error: {err}", err=True)
+            raise click.Abort()
+        export_report = run_export(conn, root)
+    finally:
+        conn.close()
+    print_pull_report(root, result, export_report.written)
+
+
+@main.command(name="audit-model")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option("--since", default=None, help="Audit commits after this ref (e.g. HEAD~10).")
+@click.option("--json", "json_output", is_flag=True, help="Emit a machine-readable JSON report.")
+def audit_model_cmd(repo_root: Path, since: str | None, json_output: bool) -> None:
+    """Detect AI index-maintenance failures (coverage, staleness, taint, accuracy)."""
+    import sys
+    from ctx_engine.commands.audit_model_cmd import run_audit_model
+    try:
+        exit_code = run_audit_model(repo_root.resolve(), since_commit=since, json_output=json_output)
+    except (FileNotFoundError, ValueError) as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
+    if exit_code != 0:
+        sys.exit(exit_code)
+
+
+@main.command(name="graph")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option("--focus", default=None, help="Only show the neighborhood of this file.")
+@click.option("--depth", type=int, default=2, show_default=True, help="Hops out from the focus file.")
+@click.option("--format", "format", type=click.Choice(["dot", "mermaid"]), default="dot",
+              help="Output format.")
+@click.option("--output", default=None, help="Write to a file instead of stdout.")
+@click.option("--with-calls", is_flag=True, default=False,
+              help="Also show call-graph edges (dashed). Best with --focus --depth 1.")
+def graph_cmd(repo_root: Path, focus: str | None, depth: int, format: str,
+              output: str | None, with_calls: bool) -> None:
+    """Export the import/call graph as DOT (Graphviz) or Mermaid."""
+    from ctx_engine.commands.graph_cmd import run_graph
+    try:
+        run_graph(repo_root.resolve(), focus=focus, depth=depth, format=format,
+                  output=output, with_calls=with_calls)
+    except (FileNotFoundError, ValueError) as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
+
+
+@main.command(name="benchmark")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option("--json", "json_output", is_flag=True, help="Emit a machine-readable JSON report.")
+def benchmark_cmd(repo_root: Path, json_output: bool) -> None:
+    """Quantitative index quality metrics with an overall 0-100 score."""
+    from ctx_engine.commands.benchmark_cmd import run_benchmark
+    try:
+        run_benchmark(repo_root.resolve(), json_output=json_output)
+    except FileNotFoundError as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
+
+
+

@@ -342,6 +342,37 @@ def resolve_file_imports(
                                 resolved.append(f)
                         break
 
+        elif language == "kotlin":
+            # Kotlin import paths use dots; Kotlin projects use the same
+            # Maven/Gradle layout as Java (src/main/kotlin/ or src/main/java/),
+            # then 'src/', then the repo root.
+            for prefix in (Path("src/main/kotlin"), Path("src/main/java"), Path("src"), Path("")):
+                target = prefix
+                for part in imp.module.split("."):
+                    if part:
+                        target = target / part
+                matched = False
+                for suffix in (".kt", ".kts"):
+                    cand = target.with_suffix(suffix).as_posix()
+                    if cand in files_set:
+                        resolved.append(cand)
+                        matched = True
+                        if "*" not in imp.names:
+                            break
+                if matched:
+                    break
+                if repo_root is not None and (repo_root / target).is_dir():
+                    # wildcard or bare package import — every Kotlin file in
+                    # the package directory
+                    for f in files_set:
+                        f_path = Path(f)
+                        if (
+                            f_path.parent.as_posix() == target.as_posix()
+                            and f_path.suffix in (".kt", ".kts")
+                        ):
+                            resolved.append(f)
+                    break
+
         elif language == "csharp":
             # C# 'using X;' is a namespace import. Resolve by scanning for any
             # .cs file whose namespace matches the imported namespace (exact or

@@ -18,6 +18,7 @@ from ctx_engine.mcp_server.tools.renderers import (
     render_generation_timestamp,
     latest_index_timestamp,
 )
+from ctx_engine.commands.push_cmd import read_shared_metadata
 
 
 def measure_query_timing(conn: sqlite3.Connection) -> dict[str, float]:
@@ -124,6 +125,30 @@ def _export_freshness(repo_root: Path, conn) -> dict[str, str]:
         else:
             statuses[file_path] = "CURRENT"
     return statuses
+
+
+def _shared_metadata_status(conn: sqlite3.Connection, repo_root: Path) -> dict:
+    """Summarize the shared-metadata sync state for ctx status."""
+    doc = read_shared_metadata(repo_root)
+    human_dangers = conn.execute(
+        "SELECT COUNT(*) FROM dangers WHERE added_by = 'human'"
+    ).fetchone()[0]
+    human_decisions = conn.execute(
+        "SELECT COUNT(*) FROM decisions WHERE added_by = 'human'"
+    ).fetchone()[0]
+
+    result = {
+        "present": doc is not None,
+        "shared_dangers": len(doc["dangers"]) if doc else 0,
+        "shared_decisions": len(doc["decisions"]) if doc else 0,
+        "human_dangers": human_dangers,
+        "human_decisions": human_decisions,
+        "exported_at": doc.get("exported_at") if doc else None,
+        "exported_by": doc.get("exported_by") if doc else None,
+    }
+    result["local_only_dangers"] = max(0, human_dangers - result["shared_dangers"])
+    result["local_only_decisions"] = max(0, human_decisions - result["shared_decisions"])
+    return result
 
 
 def run_status(repo_root: Path, full: bool = False) -> None:
@@ -307,6 +332,21 @@ def run_status(repo_root: Path, full: bool = False) -> None:
             print(f"            → run 'ctx export' to refresh")
         print(f"  dangers:  {total_dangers} zones ({danger_summary})")
         print(f"  decisions: {decision_count} recorded ({decision_human_count} human)")
+        shared = _shared_metadata_status(conn, repo_root)
+        if shared["present"]:
+            local_only = shared["local_only_dangers"] + shared["local_only_decisions"]
+            print(
+                f"  shared metadata: PRESENT "
+                f"(dangers {shared['shared_dangers']}/{shared['human_dangers']}, "
+                f"decisions {shared['shared_decisions']}/{shared['human_decisions']} human)"
+            )
+            if local_only > 0:
+                print(
+                    f"             → {local_only} human record(s) not yet pushed "
+                    f"(run 'ctx push' to share)"
+                )
+        else:
+            print("  shared metadata: NOT CONFIGURED (run 'ctx push' to share team metadata)")
         print()
         print(f"  Last sync: {last_sync[:19] if last_sync != 'never' else 'never'}  |  Last export: {last_export_ts}")
 
@@ -364,6 +404,21 @@ def run_status(repo_root: Path, full: bool = False) -> None:
         print("  export status:")
         for fname, status in sorted(export_statuses.items()):
             print(f"    {fname:45}: {status}")
+        print()
+        print("  shared metadata:")
+        shared = _shared_metadata_status(conn, repo_root)
+        if shared["present"]:
+            print(f"    file: .ctx/shared-metadata.json PRESENT")
+            print(f"    last exported: {shared['exported_at']} (by {shared['exported_by']})")
+            print(f"    dangers shared: {shared['shared_dangers']} of {shared['human_dangers']} total human dangers")
+            print(f"    decisions shared: {shared['shared_decisions']} of {shared['human_decisions']} total human decisions")
+            if shared["local_only_dangers"] > 0 or shared["local_only_decisions"] > 0:
+                print(f"    local-only: {shared['local_only_dangers']} dangers, "
+                      f"{shared['local_only_decisions']} decisions not yet pushed "
+                      f"(run 'ctx push' to share)")
+        else:
+            print("    NOT CONFIGURED")
+            print("    (run 'ctx push' to create shared metadata for your team)")
         print()
         print("  recent changes (last 5):")
         if recent_changes:
