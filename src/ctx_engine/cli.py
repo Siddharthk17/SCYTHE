@@ -656,7 +656,11 @@ def ci_cmd(repo_root: Path, json_output: bool, output_workflow: bool) -> None:
     except (FileNotFoundError, ValueError) as err:
         click.echo(f"Error: {err}", err=True)
         raise click.Abort()
-    if exit_code != 0 and not json_output:
+    if exit_code != 0:
+        if json_output:
+            # CI pipelines parse the JSON report and rely on the exit code;
+            # fail cleanly without click's "Aborted!" noise.
+            raise SystemExit(exit_code)
         raise click.Abort()
 
 

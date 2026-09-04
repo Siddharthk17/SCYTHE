@@ -175,7 +175,7 @@ def collect_call_edges(conn: sqlite3.Connection, graph: dict[str, dict]) -> None
     for path in graph:
         graph[path]["calls"] = []
     rows = conn.execute(
-        """SELECT DISTINCT cf.path AS caller_file, tf.path AS callee_file
+        """SELECT DISTINCT cf.file AS caller_file, tf.file AS callee_file
            FROM call_graph cg
            JOIN functions cf ON cf.id = cg.caller_id
            JOIN functions tf ON tf.id = cg.callee_id

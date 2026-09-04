@@ -123,10 +123,10 @@ def test_mermaid_valid_syntax_and_content(graph_db):
     assert out.rstrip().endswith("```")
     assert "graph LR" in out
     assert "mcts_py[\"mcts.py (search)\"]" in out
-    assert "mcts_py --> targets_py" in out
+    assert "src_ctx_engine_mcts_py --> src_ctx_engine_targets_py" in out
     # Focus file styled darker blue; high fan-in styled red.
-    assert "style mcts_py fill:#85C1E9" in out
-    assert "style targets_py fill:#F1948A" in out
+    assert "style src_ctx_engine_mcts_py fill:#85C1E9" in out
+    assert "style src_ctx_engine_targets_py fill:#F1948A" in out
 
 
 # ── run_graph behaviors (real DB) ─────────────────────────────────────────────

@@ -271,6 +271,7 @@ def run_status(repo_root: Path, full: bool = False) -> None:
 
     # Week 7: measure performance of hot query paths (only when --full).
     query_timings: dict[str, float] = {}
+    shared = _shared_metadata_status(conn, repo_root)
     if full:
         try:
             query_timings = measure_query_timing(conn)
@@ -332,7 +333,6 @@ def run_status(repo_root: Path, full: bool = False) -> None:
             print(f"            → run 'ctx export' to refresh")
         print(f"  dangers:  {total_dangers} zones ({danger_summary})")
         print(f"  decisions: {decision_count} recorded ({decision_human_count} human)")
-        shared = _shared_metadata_status(conn, repo_root)
         if shared["present"]:
             local_only = shared["local_only_dangers"] + shared["local_only_decisions"]
             print(
@@ -406,7 +406,6 @@ def run_status(repo_root: Path, full: bool = False) -> None:
             print(f"    {fname:45}: {status}")
         print()
         print("  shared metadata:")
-        shared = _shared_metadata_status(conn, repo_root)
         if shared["present"]:
             print(f"    file: .ctx/shared-metadata.json PRESENT")
             print(f"    last exported: {shared['exported_at']} (by {shared['exported_by']})")
