@@ -23,6 +23,9 @@ class FunctionRecord:
     node: Node
     body_node: Node | None
     mutates: list[str] = field(default_factory=list)
+    # Joins class_name and name in the function id ("path::Class.name").
+    # Ruby instance methods use "#" per Ruby convention ("path::Class#name").
+    name_separator: str = "."
 
 
 @dataclass

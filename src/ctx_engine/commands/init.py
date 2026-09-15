@@ -142,6 +142,9 @@ def run_init(repo_root: Path) -> None:
 
     conn.close()
 
+    from ctx_engine.commands.snapshot_cmd import ensure_snapshots_gitignored
+    ensure_snapshots_gitignored(repo_root)
+
     total_time = time_module.time() - t_start
 
     print(f"ctx init — {repo_name}")

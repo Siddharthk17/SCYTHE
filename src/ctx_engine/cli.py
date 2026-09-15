@@ -829,4 +829,241 @@ def benchmark_cmd(repo_root: Path, json_output: bool) -> None:
         raise click.Abort()
 
 
+# ── Week 9 commands ───────────────────────────────────────────────────────────
+
+
+@main.command(name="impact")
+@click.argument("target")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option("--depth", type=int, default=5, show_default=True,
+              help="Max call-graph hops from the target.")
+@click.option("--format", "format", type=click.Choice(["text", "json", "mermaid"]),
+              default="text", show_default=True, help="Output format.")
+def impact_cmd(target: str, repo_root: Path, depth: int, format: str) -> None:
+    """Transitive impact analysis: who depends on this function, file, or system."""
+    from ctx_engine.commands.impact_cmd import run_impact
+    try:
+        run_impact(repo_root.resolve(), target, depth=depth, format=format)
+    except (FileNotFoundError, ValueError) as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
+
+
+@main.group(name="refactor")
+def refactor_group() -> None:
+    """Plan a rename/signature change, then fix ctx metadata after it."""
+
+
+@refactor_group.command(name="plan")
+@click.argument("old_function_id")
+@click.option("--new-name", default=None, help="New function name (rename target).")
+@click.option("--new-signature", default=None, help="New signature (signature change).")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+def refactor_plan_cmd(old_function_id: str, new_name: str | None,
+                      new_signature: str | None, repo_root: Path) -> None:
+    """Print a step-by-step change plan for renaming a function."""
+    from ctx_engine.commands.refactor_cmd import run_refactor_plan
+    try:
+        run_refactor_plan(repo_root.resolve(), old_function_id,
+                          new_name=new_name, new_signature=new_signature)
+    except (FileNotFoundError, ValueError) as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
+
+
+@refactor_group.command(name="apply")
+@click.argument("old_function_id")
+@click.option("--new-name", default=None,
+              help="New function name (disambiguates the rename target).")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+def refactor_apply_cmd(old_function_id: str, new_name: str | None,
+                       repo_root: Path) -> None:
+    """Re-link call-graph rows after a rename has been made and reindexed."""
+    from ctx_engine.commands.refactor_cmd import run_refactor_apply
+    try:
+        run_refactor_apply(repo_root.resolve(), old_function_id, new_name=new_name)
+    except (FileNotFoundError, ValueError) as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
+
+
+@main.command(name="pr-description")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option("--staged", is_flag=True, default=False,
+              help="Describe staged changes (default when --range is absent).")
+@click.option("--range", "range_expr", default=None,
+              help="Git commit range to describe, e.g. HEAD~3..HEAD.")
+@click.option("--output", default=None, help="Write to this path instead of PR_DESCRIPTION.md.")
+def pr_description_cmd(repo_root: Path, staged: bool, range_expr: str | None,
+                       output: str | None) -> None:
+    """Generate a structured pull request description from changes."""
+    from ctx_engine.commands.pr_description_cmd import run_pr_description
+    try:
+        run_pr_description(repo_root.resolve(), staged=staged,
+                           range_expr=range_expr, output=output)
+    except (FileNotFoundError, ValueError) as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
+
+
+@main.command(name="test-suggest")
+@click.argument("function_id", required=False)
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option("--staged", is_flag=True, default=False,
+              help="Suggest tests for functions overlapping the staged diff.")
+@click.option("--format", "format", type=click.Choice(["text", "json"]),
+              default="text", show_default=True, help="Output format.")
+@click.option("--llm", "use_llm", is_flag=True, default=False,
+              help="Generate test code with the LLM (uses API calls).")
+def test_suggest_cmd(function_id: str | None, repo_root: Path, staged: bool,
+                     format: str, use_llm: bool) -> None:
+    """Suggest concrete test cases for a function from index structure."""
+    from ctx_engine.commands.test_suggest_cmd import run_test_suggest
+    try:
+        run_test_suggest(repo_root.resolve(), function_id=function_id,
+                         staged=staged, format=format, llm=use_llm)
+    except (FileNotFoundError, ValueError) as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
+
+
+class _SnapshotGroup(click.Group):
+    """Routes `list` / `delete` to subcommands, anything else to create.
+
+    A plain group argument would swallow the subcommand names (`ctx snapshot
+    list` would create a snapshot called "list"), so when any token matches
+    a subcommand the group argument is hidden for parsing and normal
+    subcommand dispatch takes over.
+    """
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        if any(a in self.commands for a in args):
+            saved = self.params
+            self.params = [p for p in saved if getattr(p, "name", None) != "name"]
+            try:
+                return super().parse_args(ctx, args)
+            finally:
+                self.params = saved
+        return super().parse_args(ctx, args)
+
+
+@main.group(name="snapshot", invoke_without_command=True, cls=_SnapshotGroup)
+@click.argument("name", required=False)
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.pass_context
+def snapshot_group(ctx: click.Context, name: str | None = None, repo_root: Path = Path(".")) -> None:
+    """Snapshot the index (ctx snapshot <name>), or manage snapshots.
+
+    \b
+    ctx snapshot <name>          create a snapshot
+    ctx snapshot list            list snapshots
+    ctx snapshot delete <name>   delete a snapshot
+    """
+    from ctx_engine.commands.snapshot_cmd import run_snapshot_create
+    ctx.ensure_object(dict)
+    ctx.obj["repo_root"] = repo_root.resolve()
+    if ctx.invoked_subcommand is None:
+        if not name:
+            click.echo("Error: pass a snapshot name or a subcommand (list, delete).", err=True)
+            raise click.Abort()
+        try:
+            run_snapshot_create(ctx.obj["repo_root"], name)
+        except SystemExit as err:
+            raise click.Abort() if err.code else None
+
+
+@snapshot_group.command(name="list")
+@click.pass_context
+def snapshot_list_cmd(ctx: click.Context) -> None:
+    """List all snapshots."""
+    from ctx_engine.commands.snapshot_cmd import run_snapshot_list
+    run_snapshot_list(ctx.obj["repo_root"])
+
+
+@snapshot_group.command(name="delete")
+@click.argument("name")
+@click.option("--no-confirm", is_flag=True, default=False,
+              help="Delete without prompting for confirmation.")
+@click.pass_context
+def snapshot_delete_cmd(ctx: click.Context, name: str, no_confirm: bool) -> None:
+    """Delete a snapshot."""
+    from ctx_engine.commands.snapshot_cmd import run_snapshot_delete
+    try:
+        run_snapshot_delete(ctx.obj["repo_root"], name, no_confirm=no_confirm)
+    except SystemExit as err:
+        raise click.Abort() if err.code else None
+
+
+@main.command(name="restore")
+@click.argument("name")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option("--no-confirm", is_flag=True, default=False,
+              help="Restore without the 'yes' confirmation prompt.")
+def restore_cmd(name: str, repo_root: Path, no_confirm: bool) -> None:
+    """Replace the live index with a named snapshot (auto-saves current state)."""
+    from ctx_engine.commands.restore_cmd import run_restore
+    try:
+        run_restore(repo_root.resolve(), name, no_confirm=no_confirm)
+    except SystemExit as err:
+        raise click.Abort() if err.code else None
+
+
+@main.command(name="history")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option("--file", "file_path", default=None, help="Only entries for this file.")
+@click.option("--author", type=click.Choice(["human", "model", "all"]),
+              default=None, help="Filter by change author.")
+@click.option("--since", default=None, help="Only entries at or after this ISO timestamp.")
+@click.option("--until", default=None, help="Only entries at or before this ISO timestamp.")
+@click.option("--system", default=None, help="Only entries for files in this system.")
+@click.option("--limit", type=int, default=50, show_default=True,
+              help="Max entries to show.")
+@click.option("--format", "format", type=click.Choice(["text", "json"]),
+              default="text", show_default=True, help="Output format.")
+def history_cmd(repo_root: Path, file_path: str | None, author: str | None,
+                since: str | None, until: str | None, system: str | None,
+                limit: int, format: str) -> None:
+    """Query the timeline of recorded changes with optional filters."""
+    from ctx_engine.commands.history_cmd import run_history
+    try:
+        run_history(repo_root.resolve(), file=file_path, author=author,
+                    since=since, until=until, system=system,
+                    limit=limit, format=format)
+    except (FileNotFoundError, ValueError) as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
+
+
 

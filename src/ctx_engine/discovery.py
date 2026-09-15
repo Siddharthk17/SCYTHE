@@ -18,6 +18,7 @@ EXTENSION_TO_LANGUAGE: dict[str, str] = {
     ".cs": "csharp",
     ".kt": "kotlin",
     ".kts": "kotlin",
+    ".rb": "ruby",
 }
 
 def assert_inside_git_repo(repo_root: Path) -> None:

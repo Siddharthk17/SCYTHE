@@ -7,6 +7,7 @@ import tree_sitter_rust as tsrust
 import tree_sitter_java as tsjava
 import tree_sitter_c_sharp as tscsharp
 import tree_sitter_kotlin as tskotlin
+import tree_sitter_ruby as tsruby
 from tree_sitter import Language, Parser, Tree
 
 LANGUAGES: dict[str, Language] = {
@@ -19,6 +20,7 @@ LANGUAGES: dict[str, Language] = {
     "java":       Language(tsjava.language()),
     "csharp":     Language(tscsharp.language()),
     "kotlin":     Language(tskotlin.language()),
+    "ruby":       Language(tsruby.language()),
 }
 
 

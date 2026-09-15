@@ -24,6 +24,7 @@ from ctx_engine.languages import (
     JavaAdapter,
     CSharpAdapter,
     KotlinAdapter,
+    RubyAdapter,
 )
 from ctx_engine.languages.base import FileStructure, FunctionRecord
 from ctx_engine.languages.registry import get_parser, parse_file
@@ -44,7 +45,19 @@ ADAPTERS = {
     "java": JavaAdapter(),
     "csharp": CSharpAdapter(),
     "kotlin": KotlinAdapter(),
+    "ruby": RubyAdapter(),
 }
+
+
+def function_id_for(path: str, func: FunctionRecord) -> str:
+    """Build the function id, honoring the adapter's name separator.
+
+    Every adapter uses "." except Ruby, which uses "#" for instance methods
+    per Ruby convention (`service.rb::UserService#find`).
+    """
+    if func.class_name:
+        return f"{path}::{func.class_name}{func.name_separator}{func.name}"
+    return f"{path}::{func.name}"
 
 
 def extension_to_language(ext: str) -> str | None:
@@ -131,6 +144,7 @@ def parse_one_file(args: tuple[str, str, str]) -> ParseResult:
                     node=None,
                     body_node=None,
                     mutates=fn.mutates,
+                    name_separator=fn.name_separator,
                 )
             )
         stripped = FileStructure(
@@ -252,8 +266,7 @@ def reindex_file(
 
     for func in struct.functions:
         func_sem_hash = function_semantic_hash(func.node, source, language)
-        qualified_name = f"{func.class_name}.{func.name}" if func.class_name else func.name
-        func_id = f"{path}::{qualified_name}"
+        func_id = function_id_for(path, func)
         if func_id in seen_ids:
             func_id = f"{func_id}@{func.line_start}"
         seen_ids.add(func_id)
@@ -564,8 +577,7 @@ def run_reindex_pipeline(
                     
                     seen_ids = set()
                     for func in struct.functions:
-                        qualified_name = f"{func.class_name}.{func.name}" if func.class_name else func.name
-                        func_id = f"{file_path}::{qualified_name}"
+                        func_id = function_id_for(file_path, func)
                         if func_id in seen_ids:
                             func_id = f"{func_id}@{func.line_start}"
                         seen_ids.add(func_id)

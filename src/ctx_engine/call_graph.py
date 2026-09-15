@@ -28,6 +28,29 @@ def collect_calls_in_subtree(node: Node, language: str) -> list[tuple[str, str |
                     method_text = ""
                 receiver_text = receiver.text.decode("utf-8") if receiver else None
                 calls.append((method_text, receiver_text))
+        elif language == "ruby" and n.type == "call":
+            # Ruby `call` nodes carry `method` and optional `receiver` fields,
+            # covering bare calls (puts x), receiver calls (@db.fetch),
+            # and chained calls (obj.foo.bar). Blocks are anonymous, so calls
+            # inside do...end / {...} naturally attribute to the enclosing
+            # method whose subtree is being walked.
+            method = n.child_by_field_name("method")
+            receiver = n.child_by_field_name("receiver")
+            if method is not None:
+                try:
+                    method_text = method.text.decode("utf-8")
+                except (UnicodeDecodeError, AttributeError):
+                    method_text = ""
+                if method_text in ("require", "require_relative"):
+                    pass
+                else:
+                    try:
+                        receiver_text = (
+                            receiver.text.decode("utf-8") if receiver is not None else None
+                        )
+                    except (UnicodeDecodeError, AttributeError):
+                        receiver_text = ""
+                    calls.append((method_text, receiver_text))
 
         if is_call and callee_node:
             obj_node = None

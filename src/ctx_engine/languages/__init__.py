@@ -8,6 +8,7 @@ from ctx_engine.languages.rust_adapter import RustAdapter
 from ctx_engine.languages.java_adapter import JavaAdapter
 from ctx_engine.languages.csharp_adapter import CSharpAdapter
 from ctx_engine.languages.kotlin_adapter import KotlinAdapter
+from ctx_engine.languages.ruby_adapter import RubyAdapter
 
 __all__ = [
     "LanguageAdapter",
@@ -25,4 +26,5 @@ __all__ = [
     "JavaAdapter",
     "CSharpAdapter",
     "KotlinAdapter",
+    "RubyAdapter",
 ]

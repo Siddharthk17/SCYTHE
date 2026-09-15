@@ -4,6 +4,34 @@ from ctx_engine.languages.base import ImportStatement
 from ctx_engine.languages.registry import get_parser
 
 
+def _is_ruby_gem_dependency(module: str, repo_root: Path | None) -> bool:
+    """True if a bare Ruby `require` names a gem from the repo's Gemfile.
+
+    Gemfile-listed gems are external by definition. Requires that match no
+    Gemfile entry still resolve when they hit a file under lib/ or root
+    (intra-repo requires); stdlib names like `json` simply match nothing
+    and are dropped as external.
+    """
+    if repo_root is None:
+        return False
+    gemfile = repo_root / "Gemfile"
+    if not gemfile.exists():
+        return False
+    try:
+        content = gemfile.read_text(encoding="utf-8")
+    except (IOError, OSError):
+        return False
+    top = module.split("/")[0].replace("-", "_")
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("gem "):
+            continue
+        name = stripped[4:].strip().strip("\"'").split(",")[0].strip().strip("\"'")
+        if name.replace("-", "_") == top or name == top:
+            return True
+    return False
+
+
 def get_go_module_name(repo_root: Path) -> str | None:
     """Extract the module name from the go.mod file at the repo root."""
     go_mod_path = repo_root / "go.mod"
@@ -372,6 +400,29 @@ def resolve_file_imports(
                         ):
                             resolved.append(f)
                     break
+
+        elif language == "ruby":
+            # The adapter marks require_relative with level=1 and bare
+            # require with level=0. Relative requires resolve against the
+            # current file's directory; bare requires are external (stdlib
+            # or gems) unless they match a file under lib/ or the repo root.
+            if imp.level > 0:
+                norm = normalize_repo_path(current_dir, imp.module)
+                for cand in (norm.with_suffix(".rb"), norm):
+                    cand_str = cand.as_posix()
+                    if cand_str in files_set:
+                        resolved.append(cand_str)
+                        break
+            else:
+                if _is_ruby_gem_dependency(imp.module, repo_root):
+                    continue
+                for prefix in (Path("lib"), Path("")):
+                    target = prefix / imp.module
+                    for cand in (target.with_suffix(".rb"), target):
+                        cand_str = cand.as_posix()
+                        if cand_str in files_set:
+                            resolved.append(cand_str)
+                            break
 
         elif language == "csharp":
             # C# 'using X;' is a namespace import. Resolve by scanning for any

@@ -280,6 +280,9 @@ def run_status(repo_root: Path, full: bool = False) -> None:
 
     conn.close()
 
+    from ctx_engine.commands.snapshot_cmd import list_snapshots
+    snapshots = list_snapshots(repo_root)
+
     repo_name = repo_root.name
 
     if not full:
@@ -347,6 +350,14 @@ def run_status(repo_root: Path, full: bool = False) -> None:
                 )
         else:
             print("  shared metadata: NOT CONFIGURED (run 'ctx push' to share team metadata)")
+        if snapshots:
+            latest = snapshots[0]
+            print(
+                f"  snapshots:  {len(snapshots)} available "
+                f"(latest: {latest['name']}, {latest.get('created_at', '?')})"
+            )
+        else:
+            print("  snapshots:  none (run 'ctx snapshot <name>' before major changes)")
         print()
         print(f"  Last sync: {last_sync[:19] if last_sync != 'never' else 'never'}  |  Last export: {last_export_ts}")
 
@@ -428,6 +439,17 @@ def run_status(repo_root: Path, full: bool = False) -> None:
                 print(f"    {h}  \"{s}\"  {t}")
         else:
             print("    (none — run 'ctx install-hooks' and make a commit)")
+        print()
+        print("  snapshots:")
+        if snapshots:
+            for snap in snapshots:
+                print(
+                    f"    {snap['name']:<24} {snap.get('created_at', '?')}  "
+                    f"{snap.get('file_count', '?')} files, "
+                    f"{snap.get('function_count', '?')} functions"
+                )
+        else:
+            print("    (none — run 'ctx snapshot <name>' before major changes)")
         print()
         print("  mcp server:")
         print(f"    config: {mcp_config_status}")

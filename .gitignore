@@ -54,3 +54,4 @@ node_modules/
 .mcp.json
 CLAUDE.md
 .github/copilot-instructions.md
+.ctx/snapshots/
