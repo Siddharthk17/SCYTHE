@@ -37,11 +37,12 @@ def git_repo(tmp_path):
     conn.close()
 
 
-def _write_and_commit(tmp_path, filename, content, message):
+def _write_and_commit(tmp_path, filename, content, message,
+                      name="Tester", email="t@t.io"):
     (tmp_path / filename).write_text(content)
     subprocess.run(["git", "add", filename], cwd=tmp_path, check=True)
     subprocess.run(
-        ["git", "-c", "user.name=Tester", "-c", "user.email=t@t.io",
+        ["git", "-c", f"user.name={name}", "-c", f"user.email={email}",
          "commit", "-q", "-m", message],
         cwd=tmp_path, check=True,
     )
@@ -49,6 +50,16 @@ def _write_and_commit(tmp_path, filename, content, message):
         ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True
     )
     return result.stdout.strip()
+
+
+MODEL_NAME = "Claude"
+MODEL_EMAIL = "claude@anthropic.local"
+
+
+def _write_and_commit_as_model(tmp_path, filename, content, message):
+    """A commit whose git author identifies it as model-authored."""
+    return _write_and_commit(tmp_path, filename, content, message,
+                             name=MODEL_NAME, email=MODEL_EMAIL)
 
 
 def _insert_changes_row(conn, file_path, commit_hash, author="model", summary="did things"):
@@ -75,13 +86,22 @@ def _insert_function(conn, fn_id, file_path, line_start, line_end, **kw):
 
 def test_coverage_missing_log_flagged(git_repo):
     conn, repo_root = git_repo
-    commit = _write_and_commit(repo_root, "b.py", "x = 1\n", "model edit")
+    commit = _write_and_commit_as_model(repo_root, "b.py", "x = 1\n", "model edit")
 
     issues = check_model_change_coverage(conn, None, repo_root)
     matching = [i for i in issues if i.file == "b.py" and i.commit == commit[:7]]
-    assert matching, "file changed in a commit with no changes row must be flagged"
+    assert matching, "file changed in a model commit with no changes row must be flagged"
     assert matching[0].type == "missing_log"
     assert matching[0].severity == "warning"
+
+
+def test_coverage_human_only_history_clean(git_repo):
+    """Pure-human history carries no model signal — coverage passes clean."""
+    conn, repo_root = git_repo
+    _write_and_commit(repo_root, "b.py", "x = 1\n", "human edit")
+    _write_and_commit(repo_root, "c.py", "y = 2\n", "another human edit")
+
+    assert check_model_change_coverage(conn, None, repo_root) == []
 
 
 def test_coverage_logged_commit_clean(git_repo):
@@ -95,10 +115,10 @@ def test_coverage_logged_commit_clean(git_repo):
 
 def test_coverage_since_range_limits_scope(git_repo):
     conn, repo_root = git_repo
-    _write_and_commit(repo_root, "a.py", "a = 1\n", "first")
+    _write_and_commit_as_model(repo_root, "a.py", "a = 1\n", "first")
     first = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_root,
                            capture_output=True, text=True).stdout.strip()
-    _write_and_commit(repo_root, "b.py", "b = 1\n", "second")
+    _write_and_commit_as_model(repo_root, "b.py", "b = 1\n", "second")
 
     issues = check_model_change_coverage(conn, first, repo_root)
     assert [i for i in issues if i.file == "a.py"] == []
@@ -233,9 +253,10 @@ def test_description_accuracy_mismatch_flagged(git_repo):
 
 
 def test_session_log_missing_flagged(git_repo):
+    from datetime import datetime, timezone
     conn, repo_root = git_repo
-    _write_and_commit(repo_root, "a.py", "a = 1\n", "placeholder")
-    _insert_changes_row(conn, "a.py", "deadbeef", author="model")
+    commit = _write_and_commit_as_model(repo_root, "a.py", "a = 1\n", "model work")
+    _insert_changes_row(conn, "a.py", commit, author="model")
 
     issues = check_session_log(conn, None, repo_root)
     assert len(issues) == 1
@@ -243,14 +264,24 @@ def test_session_log_missing_flagged(git_repo):
 
 
 def test_session_log_present_clean(git_repo):
+    from datetime import datetime, timezone
     conn, repo_root = git_repo
-    _write_and_commit(repo_root, "a.py", "a = 1\n", "placeholder")
-    _insert_changes_row(conn, "a.py", "deadbeef", author="model")
+    commit = _write_and_commit_as_model(repo_root, "a.py", "a = 1\n", "model work")
+    _insert_changes_row(conn, "a.py", commit, author="model")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     conn.execute(
         "INSERT INTO session_log (entry, files_touched, timestamp) "
-        "VALUES ('worked on a.py', '[\"a.py\"]', '2026-06-14T10:00:00Z')"
+        "VALUES ('worked on a.py', '[\"a.py\"]', ?)",
+        (now,),
     )
     conn.commit()
+
+    assert check_session_log(conn, None, repo_root) == []
+
+
+def test_session_log_human_only_history_clean(git_repo):
+    conn, repo_root = git_repo
+    _write_and_commit(repo_root, "a.py", "a = 1\n", "human work")
 
     assert check_session_log(conn, None, repo_root) == []
 
@@ -280,7 +311,25 @@ def test_json_output_valid_schema(git_repo, capsys):
     }
     assert doc["checks"]["freshness"]["passed"] is False
     assert doc["checks"]["freshness"]["issues"][0]["type"] == "stale_file"
+    # Documented per-check keys (spec schema) alongside the issue lists.
+    assert doc["checks"]["freshness"]["stale_files"] == ["a.py"]
+    assert doc["checks"]["taint_clearance"]["uncleared_taints"] == 0
+    assert doc["checks"]["description_accuracy"]["mismatches"] == []
+    assert "missing_entries" in doc["checks"]["session_log"]
     assert exit_code == 1
+
+
+def test_human_only_repo_all_checks_pass(git_repo, capsys):
+    """A repo with human commits and no model signal: all checks pass, exit 0."""
+    conn, repo_root = git_repo
+    _write_and_commit(repo_root, "a.py", "a = 1\n", "human work")
+    _write_and_commit(repo_root, "b.py", "b = 2\n", "more human work")
+
+    exit_code = run_audit_model(repo_root, json_output=True)
+    doc = json.loads(capsys.readouterr().out)
+    assert all(c["passed"] for c in doc["checks"].values())
+    assert doc["model_commits"] == 0
+    assert exit_code == 0
 
 
 def test_clean_repo_all_checks_pass(git_repo, capsys):
@@ -294,8 +343,8 @@ def test_clean_repo_all_checks_pass(git_repo, capsys):
 
 def test_text_report_footer(git_repo, capsys):
     conn, repo_root = git_repo
-    _write_and_commit(repo_root, "a.py", "a = 1\n", "placeholder")
-    _insert_changes_row(conn, "a.py", "deadbeef", author="model")
+    commit = _write_and_commit_as_model(repo_root, "a.py", "a = 1\n", "model work")
+    _insert_changes_row(conn, "a.py", commit, author="model")
 
     run_audit_model(repo_root, json_output=False)
     out = capsys.readouterr().out

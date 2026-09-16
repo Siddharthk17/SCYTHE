@@ -756,14 +756,16 @@ def pull_cmd(repo_root: Path, dry_run: bool, overwrite_human: bool) -> None:
     conn = connect(db_path)
     try:
         try:
-            result = pull_metadata(conn, root, overwrite_human=overwrite_human)
+            result = pull_metadata(conn, root, overwrite_human=overwrite_human,
+                                   dry_run=dry_run)
         except SharedMetadataError as err:
             click.echo(f"Error: {err}", err=True)
             raise click.Abort()
-        export_report = run_export(conn, root)
+        export_report = run_export(conn, root) if not dry_run else None
     finally:
         conn.close()
-    print_pull_report(root, result, export_report.written)
+    print_pull_report(root, result, export_report.written if export_report else [],
+                      dry_run=dry_run)
 
 
 @main.command(name="audit-model")

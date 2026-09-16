@@ -145,7 +145,7 @@ def measure_danger_coverage(conn: sqlite3.Connection) -> dict:
     return {
         "high_fanin_count": len(high_fanin_fns),
         "covered": covered,
-        "coverage_rate": _pct(covered, len(high_fanin_fns)),
+        "coverage_rate": _pct(covered, len(high_fanin_fns)) if high_fanin_fns else 1.0,
         "uncovered": uncovered,
     }
 

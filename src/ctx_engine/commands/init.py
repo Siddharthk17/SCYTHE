@@ -2,6 +2,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import sqlite3
 import time as time_module
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor

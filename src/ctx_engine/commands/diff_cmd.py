@@ -17,7 +17,7 @@ from ctx_engine.db import connect
 from ctx_engine.discovery import discover_parseable_files
 from ctx_engine.hashing import file_semantic_hash, function_semantic_hash
 from ctx_engine.languages.registry import get_parser
-from ctx_engine.reindex import ADAPTERS
+from ctx_engine.reindex import ADAPTERS, function_id_for
 
 
 @dataclass
@@ -47,13 +47,13 @@ class AuditReport:
 
 
 def _build_function_id(path: str, fn, seen: set[str] | None = None) -> str:
-    """Build a function id matching the convention used by the reindex pipeline.
+    """Build a function id using the reindex pipeline's single source of truth.
 
-    Format: '<file_path>::<ClassName>.<name>' (or '<file_path>::<name>' if no class).
-    Disambiguated by line_start when collisions occur.
+    Delegates to reindex.function_id_for so every adapter's separator
+    convention ("." everywhere, "#" for Ruby instance methods) stays in
+    exactly one place. Disambiguated by line_start when collisions occur.
     """
-    qualified = f"{fn.class_name}.{fn.name}" if fn.class_name else fn.name
-    base = f"{path}::{qualified}"
+    base = function_id_for(path, fn)
     if seen is not None:
         if base in seen:
             return f"{base}@{fn.line_start}"

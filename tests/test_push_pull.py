@@ -195,6 +195,33 @@ def test_pull_human_wins_over_model_record(repo):
     assert row["added_by"] == "human"
 
 
+def test_pull_dry_run_writes_nothing(repo, capsys):
+    """--dry-run previews identical outcomes but leaves the DB untouched."""
+    conn, repo_root = repo
+    _add_danger(conn, "d_same", "Same content danger")
+    conn.commit()
+
+    _write_shared(repo_root, [
+        _shared_danger("d_new", "Shared new danger"),
+        _shared_danger("d_same", "Same content danger"),
+    ], [])
+
+    result = pull_metadata(conn, repo_root, dry_run=True)
+    assert result["dry_run"] is True
+    assert result["dangers"]["imported"] == ["d_new"]
+    assert result["dangers"]["skipped"] == ["d_same"]
+
+    # Database unchanged: the "new" record was not inserted.
+    assert conn.execute("SELECT COUNT(*) FROM dangers").fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM dangers WHERE id = 'd_new'"
+    ).fetchone()[0] == 0
+
+    print_pull_report(repo_root, result, [], dry_run=True)
+    out = capsys.readouterr().out
+    assert "DRY RUN" in out
+
+
 def test_pull_unrecognized_schema_version(repo):
     conn, repo_root = repo
     _write_shared(repo_root, [], [])

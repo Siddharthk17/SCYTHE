@@ -56,9 +56,11 @@ jobs:
           ANTHROPIC_API_KEY: ${{{{ secrets.ANTHROPIC_API_KEY }}}}
 
       - name: Validate index against changed files
+        # Validation-only CI does not call the LLM, so ANTHROPIC_API_KEY is optional here
+        # (required: false). It is only needed if this job also runs ctx summarize/sync.
         run: ctx ci --json > ctx-report.json && cat ctx-report.json
         env:
-          ANTHROPIC_API_KEY: ${{{{ secrets.ANTHROPIC_API_KEY }}}}
+          ANTHROPIC_API_KEY: ${{{{ secrets.ANTHROPIC_API_KEY }}}} # required: false for validation-only CI
 
       - name: Upload ctx report
         if: always()

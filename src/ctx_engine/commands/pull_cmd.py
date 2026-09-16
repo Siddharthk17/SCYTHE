@@ -117,11 +117,16 @@ def pull_metadata(
     conn: sqlite3.Connection,
     repo_root: Path,
     overwrite_human: bool = False,
+    dry_run: bool = False,
 ) -> dict:
     """Import .ctx/shared-metadata.json into the local database.
 
     Raises SharedMetadataError when the file is missing or its schema_version
     is not recognized. Nothing is committed unless the import succeeds.
+
+    With dry_run=True the import is previewed inside a rolled-back savepoint:
+    the returned per-record outcomes are identical to a real run, but the
+    database is left untouched.
     """
     doc = read_shared_metadata(repo_root)
     if doc is None:
@@ -138,23 +143,38 @@ def pull_metadata(
         )
 
     results = {}
-    with conn:
-        for table in ("dangers", "decisions"):
-            records = doc.get(table) or []
-            results[table] = _import_table(conn, table, records, overwrite_human)
+    if dry_run:
+        conn.execute("SAVEPOINT pull_dry_run")
+        try:
+            for table in ("dangers", "decisions"):
+                records = doc.get(table) or []
+                results[table] = _import_table(conn, table, records, overwrite_human)
+        finally:
+            conn.execute("ROLLBACK TO SAVEPOINT pull_dry_run")
+            conn.execute("RELEASE SAVEPOINT pull_dry_run")
+    else:
+        with conn:
+            for table in ("dangers", "decisions"):
+                records = doc.get(table) or []
+                results[table] = _import_table(conn, table, records, overwrite_human)
 
     return {
         "exported_by": doc.get("exported_by"),
         "exported_at": doc.get("exported_at"),
         "dangers": results["dangers"],
         "decisions": results["decisions"],
+        "dry_run": dry_run,
     }
 
 
-def print_pull_report(repo_root: Path, result: dict, export_written: list[str]) -> None:
+def print_pull_report(repo_root: Path, result: dict, export_written: list[str],
+                      dry_run: bool = False) -> None:
     repo_name = repo_root.name
     print(f"ctx pull — {repo_name}")
     print()
+    if dry_run or result.get("dry_run"):
+        print("  DRY RUN — no changes applied.")
+        print()
     print("  Reading: .ctx/shared-metadata.json")
     print(f"    exported by: {result['exported_by']} at {result['exported_at']}")
     print()
@@ -177,6 +197,14 @@ def print_pull_report(repo_root: Path, result: dict, export_written: list[str]) 
     total_new = len(result["dangers"]["imported"]) + len(result["decisions"]["imported"])
     total_skip = len(result["dangers"]["skipped"]) + len(result["decisions"]["skipped"])
     total_conflict = len(result["dangers"]["conflicts"]) + len(result["decisions"]["conflicts"])
+    if dry_run or result.get("dry_run"):
+        print(
+            f"  Would import: {total_new} new records, {total_skip} skipped (identical), "
+            f"{total_conflict} conflict (kept local)"
+        )
+        print()
+        print("  Re-run without --dry-run to apply.")
+        return
     print(
         f"  Imported: {total_new} new records, {total_skip} skipped (identical), "
         f"{total_conflict} conflict (kept local)"

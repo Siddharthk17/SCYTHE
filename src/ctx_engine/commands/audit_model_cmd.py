@@ -69,6 +69,68 @@ def get_commit_author_name(repo_root: Path, commit_hash: str) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
+def get_commit_author_email(repo_root: Path, commit_hash: str) -> str:
+    result = subprocess.run(
+        ["git", "show", "--format=%ae", "--no-patch", commit_hash],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def get_commit_timestamp(repo_root: Path, commit_hash: str) -> int | None:
+    """Commit timestamp as epoch seconds, or None if git cannot report it."""
+    result = subprocess.run(
+        ["git", "show", "--format=%ct", "--no-patch", commit_hash],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip().splitlines()[0])
+    except (ValueError, IndexError):
+        return None
+
+
+MODEL_AUTHOR_RE = re.compile(
+    r"model|claude|codex|copilot|gemini|gpt|bot|swe[-_ ]?agent|agent|ai\b",
+    re.IGNORECASE,
+)
+
+
+def is_model_authored_commit(repo_root: Path, commit_hash: str) -> bool:
+    """True when the git author name/email looks like an AI model or bot.
+
+    Human commits (e.g. "Sid", "Tester") return False, so a human-only
+    history never trips the model-accountability checks.
+    """
+    name = get_commit_author_name(repo_root, commit_hash)
+    email = get_commit_author_email(repo_root, commit_hash)
+    return bool(MODEL_AUTHOR_RE.search(name) or MODEL_AUTHOR_RE.search(email))
+
+
+def _model_commit_hashes(
+    conn: sqlite3.Connection,
+    repo_root: Path,
+    since_commit: str | None,
+) -> set[str]:
+    """Hashes in range that are model-attributed: model git author, or a
+    changes row with author='model' for that commit."""
+    model_hashes = {
+        row["commit_hash"]
+        for row in conn.execute(
+            "SELECT DISTINCT commit_hash FROM changes "
+            "WHERE author = 'model' AND commit_hash IS NOT NULL"
+        ).fetchall()
+        if row["commit_hash"]
+    }
+    in_range = set(get_commits_since(repo_root, since_commit))
+    result = {h for h in model_hashes if h in in_range}
+    for commit_hash in in_range - result:
+        if is_model_authored_commit(repo_root, commit_hash):
+            result.add(commit_hash)
+    return result
+
+
 def get_commit_diff(repo_root: Path, commit_hash: str, file_path: str) -> str:
     result = subprocess.run(
         ["git", "show", "--format=", "--unified=0", commit_hash, "--", file_path],
@@ -119,13 +181,23 @@ def check_model_change_coverage(
     since_commit: str | None,
     repo_root: Path,
 ) -> list[AuditIssue]:
-    """Check 1: every file changed in a commit has a changes-table row.
+    """Check 1: every file changed in a *model-attributed* commit has a
+    changes-table row.
 
-    Models that edit code but never call ctx_log_change leave no evidence of
-    what they changed.
+    Only model-attributed commits are audited: commits whose git author looks
+    like a model/bot, or that already carry a changes row with author='model'
+    (partial logging — some files logged, others not). Pure-human history with
+    no model signal passes clean, so `ctx audit-model` works as an
+    AI-governance gate on normal team repos. Models that edit code but never
+    call ctx_log_change leave no evidence of what they changed.
     """
     issues = []
+    model_hashes = _model_commit_hashes(conn, repo_root, since_commit)
+    if not model_hashes:
+        return []
     for commit_hash in get_commits_since(repo_root, since_commit):
+        if commit_hash not in model_hashes:
+            continue
         for file_path in get_files_changed_in_commit(repo_root, commit_hash):
             row = conn.execute(
                 "SELECT author FROM changes WHERE file = ? AND commit_hash = ?",
@@ -273,28 +345,60 @@ def check_description_accuracy(
     return issues
 
 
+def _parse_session_timestamp(value: str | None) -> int | None:
+    """Parse a session_log timestamp (ISO-8601, optional Z) to epoch seconds."""
+    if not value:
+        return None
+    try:
+        text = value.strip().replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except (ValueError, TypeError):
+        return None
+
+
 def check_session_log(
     conn: sqlite3.Connection,
     since_commit: str | None,
     repo_root: Path,
 ) -> list[AuditIssue]:
-    """Check 5: model commits without any session_log entries in the window."""
-    changes_rows = conn.execute(
-        "SELECT COUNT(DISTINCT commit_hash) FROM changes "
-        "WHERE author = 'model' AND commit_hash IS NOT NULL"
-    ).fetchone()[0]
-    if changes_rows == 0:
+    """Check 5: model commits in the audited window need a session_log entry
+    in the same time window.
+
+    The window spans from the earliest to the latest model-attributed commit
+    in range. Human-only history (no model signal) passes clean.
+    """
+    model_hashes = _model_commit_hashes(conn, repo_root, since_commit)
+    if not model_hashes:
         return []
-    session_count = conn.execute("SELECT COUNT(*) FROM session_log").fetchone()[0]
-    if session_count == 0:
+    commit_times = [
+        ts for h in model_hashes
+        for ts in [get_commit_timestamp(repo_root, h)] if ts is not None
+    ]
+    if not commit_times:
+        return []
+    window_start, window_end = min(commit_times), max(commit_times)
+    # Grace period: the model typically logs the session just after its last
+    # commit, so entries up to an hour outside the commit window still count.
+    # Anything older/newer belongs to unrelated work.
+    WINDOW_TOLERANCE_S = 3600
+    session_rows = conn.execute("SELECT timestamp FROM session_log").fetchall()
+    in_window = sum(
+        1 for r in session_rows
+        if (ts := _parse_session_timestamp(r["timestamp"])) is not None
+        and window_start - WINDOW_TOLERANCE_S <= ts <= window_end + WINDOW_TOLERANCE_S
+    )
+    if in_window == 0:
         return [AuditIssue(
             severity="warning",
             type="missing_session_log",
             file=None,
             commit=None,
             description=(
-                f"The model made {changes_rows} commit(s) without calling "
-                f"ctx_log_session."
+                f"The model made {len(model_hashes)} commit(s) in the audited "
+                f"window without calling ctx_log_session."
             ),
         )]
     return []
@@ -371,6 +475,17 @@ def _report_to_dict(report: AuditReport, repo_root: Path) -> dict:
             for i in report.checks[name]["issues"]
         ]
 
+    freshness_issues = report.checks["freshness"]["issues"]
+    stale_files = sorted({i.file for i in freshness_issues if i.file})
+    stale_fn_count = sum(
+        1 for i in freshness_issues if i.type == "stale_functions"
+    )
+    # stale_functions issues carry "N function(s)" in the description; count
+    # files for stale_files and report function-level issue count alongside.
+    taint_issues = report.checks["taint_clearance"]["issues"]
+    desc_issues = report.checks["description_accuracy"]["issues"]
+    session_issues = report.checks["session_log"]["issues"]
+
     return {
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "repo": repo_root.name,
@@ -378,8 +493,31 @@ def _report_to_dict(report: AuditReport, repo_root: Path) -> dict:
         "model_commits": report.model_commits,
         "model_file_changes": report.model_file_changes,
         "checks": {
-            name: {"passed": report.checks[name]["passed"], "issues": issues_of(name)}
-            for name in report.checks
+            "coverage": {
+                "passed": report.checks["coverage"]["passed"],
+                "issues": issues_of("coverage"),
+            },
+            "freshness": {
+                "passed": report.checks["freshness"]["passed"],
+                "stale_files": stale_files,
+                "stale_functions": stale_fn_count,
+                "issues": issues_of("freshness"),
+            },
+            "taint_clearance": {
+                "passed": report.checks["taint_clearance"]["passed"],
+                "uncleared_taints": len(taint_issues),
+                "issues": issues_of("taint_clearance"),
+            },
+            "description_accuracy": {
+                "passed": report.checks["description_accuracy"]["passed"],
+                "mismatches": [i.file for i in desc_issues if i.file],
+                "issues": issues_of("description_accuracy"),
+            },
+            "session_log": {
+                "passed": report.checks["session_log"]["passed"],
+                "missing_entries": len(session_issues),
+                "issues": issues_of("session_log"),
+            },
         },
     }
 
