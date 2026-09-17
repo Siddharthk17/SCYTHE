@@ -81,7 +81,7 @@ def run_log_commit(repo_root: Path, commit_hash: str = "HEAD") -> None:
                   AND id NOT IN (
                     SELECT id FROM changes
                     WHERE file = ?
-                    ORDER BY timestamp DESC
+                    ORDER BY timestamp DESC, id DESC
                     LIMIT 20
                   )
                 """,

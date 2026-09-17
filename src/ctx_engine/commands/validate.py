@@ -1,11 +1,12 @@
 import logging
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 from ctx_engine.db import connect
 from ctx_engine.discovery import EXTENSION_TO_LANGUAGE
 from ctx_engine.languages.registry import get_parser
-from ctx_engine.hashing import file_semantic_hash, file_content_hash
+from ctx_engine.hashing import file_semantic_hash
 
 logger = logging.getLogger("ctx")
 
@@ -94,17 +95,18 @@ def run_validate(repo_root: Path, files: list[str] | None = None) -> None:
             tree = parser.parse(blob)
 
             if tree.root_node.has_error:
-                logger.warning(
-                    "WARNING: parse errors in staged %s — validating against best-effort hash",
-                    staged_path,
+                msg = (
+                    f"WARNING: parse errors in staged {staged_path}"
+                    " — validating against best-effort hash"
                 )
+                logger.warning(msg)
+                print(msg, file=sys.stderr)
 
             staged_hash = file_semantic_hash(tree, blob, language)
         except Exception:
-            logger.warning(
-                "WARNING: could not parse staged %s — skipping validation",
-                staged_path,
-            )
+            msg = f"WARNING: could not parse staged {staged_path} — skipping validation"
+            logger.warning(msg)
+            print(msg, file=sys.stderr)
             skipped_count += 1
             continue
 
@@ -143,6 +145,5 @@ def run_validate(repo_root: Path, files: list[str] | None = None) -> None:
     print("    ctx update <file>  # re-index and re-summarize a single file")
     print()
 
-    import sys
     print("  Commit blocked.", file=sys.stderr)
     raise SystemExit(1)

@@ -138,8 +138,8 @@ def test_validate_no_db(tmp_path):
         run_validate(tmp_path)
 
 
-def test_validate_parse_error(validatable_repo, caplog):
-    """Syntax error in staged file -> warning logged, hash still compared."""
+def test_validate_parse_error(validatable_repo, caplog, capsys):
+    """Syntax error in staged file -> warning on stderr AND log, hash still compared."""
     import logging
     caplog.set_level(logging.WARNING)
     db_path = validatable_repo / ".ctx" / "index.db"
@@ -157,6 +157,8 @@ def test_validate_parse_error(validatable_repo, caplog):
     with pytest.raises(SystemExit):
         run_validate(validatable_repo)
     assert any("parse error" in rec.message.lower() for rec in caplog.records)
+    captured = capsys.readouterr()
+    assert "parse errors" in captured.err.lower()
 
 
 def test_validate_not_in_git(tmp_path):
@@ -169,3 +171,50 @@ def test_validate_not_in_git(tmp_path):
     conn.close()
     with pytest.raises(ValueError, match="Not inside a git repository"):
         run_validate(tmp_path)
+
+
+def test_validate_uses_staged_not_worktree(validatable_repo):
+    """Staged blob — not working-tree file — is what gets validated.
+
+    Regression guard for the most important Week 3 design constraint:
+    unstaged working-tree edits must not cause false positives/negatives.
+    """
+    db_path = validatable_repo / ".ctx" / "index.db"
+    fresh = "def add(a, b):\n    return a + b\n".encode()
+    fresh_hash = _compute_semantic_hash(fresh, ".py")
+    _commit_and_stage_lockstep(validatable_repo, "calc.py", fresh.decode(), db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE files SET semantic_hash = ? WHERE path = 'calc.py'", (fresh_hash,))
+    conn.commit()
+    conn.close()
+
+    # Case 1: staged == DB (fresh), disk == stale (unstaged) -> must pass.
+    (validatable_repo / "calc.py").write_bytes(fresh)
+    subprocess.run(["git", "add", "calc.py"], cwd=validatable_repo, capture_output=True, check=True)
+    (validatable_repo / "calc.py").write_text(
+        "def add(a, b):\n    return a + b + 999\n", encoding="utf-8"
+    )
+    run_validate(validatable_repo)  # exit 0 == no SystemExit
+
+    # Case 2: staged == stale, disk == fresh (unstaged revert) -> must block.
+    (validatable_repo / "calc.py").write_text(
+        "def add(a, b):\n    return a + b + 999\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "add", "calc.py"], cwd=validatable_repo, capture_output=True, check=True)
+    (validatable_repo / "calc.py").write_bytes(fresh)
+    with pytest.raises(SystemExit):
+        run_validate(validatable_repo)
+
+
+def test_validate_commit_blocked_on_stderr(validatable_repo, capsys):
+    """Failure path writes 'Commit blocked.' to stderr, report to stdout."""
+    db_path = validatable_repo / ".ctx" / "index.db"
+    _commit_and_stage_lockstep(validatable_repo, "calc.py",
+        "def add(a, b):\n    return a + b\n", db_path)
+    (validatable_repo / "calc.py").write_text("def add(a, b):\n    return a + b + 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "calc.py"], cwd=validatable_repo, capture_output=True, check=True)
+    with pytest.raises(SystemExit):
+        run_validate(validatable_repo)
+    captured = capsys.readouterr()
+    assert "STALE" in captured.out
+    assert "Commit blocked." in captured.err

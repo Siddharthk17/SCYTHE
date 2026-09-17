@@ -323,7 +323,10 @@ def reindex_file(
             "func_record": func
         })
 
-    # 5. Capture caller snapshots for removed functions
+    # 5. Capture caller snapshots for removed functions + preserve
+    # taint_queue priorities (DELETE FROM functions cascades to taint_queue
+    # when FKs are on — without this snapshot, reindexing a tainted-but-
+    # unchanged file would reset its queue priority to 0).
     removed_function_ids_with_caller_snapshots = []
     for old_id, old_func in old_funcs.items():
         if old_id not in seen_ids:
@@ -334,6 +337,17 @@ def reindex_file(
                 ).fetchall()
             ]
             removed_function_ids_with_caller_snapshots.append((old_id, callers))
+
+    preserved_taint_priority: dict[str, int] = {}
+    try:
+        for prow in conn.execute(
+            "SELECT function_id, priority FROM taint_queue WHERE function_id IN "
+            "(SELECT id FROM functions WHERE file = ?)",
+            (path,),
+        ).fetchall():
+            preserved_taint_priority[prow["function_id"]] = prow["priority"]
+    except Exception:
+        preserved_taint_priority = {}
 
     # 6. Apply database writes inside transaction
     with conn:
@@ -404,15 +418,29 @@ def reindex_file(
                 )
             )
 
-        # Re-populate taint_queue for preserved taint state
+        # Re-populate taint_queue for preserved taint state.
+        # Priority is the caller's own fan-in per Week 2 spec; preserve the
+        # pre-delete priority when present, else recompute fan-in against the
+        # post-write call_graph state visible later in Pass 4. Fall back to 0
+        # only if the fan-in query fails.
         for f_data in new_funcs_to_insert:
             if f_data["is_tainted"] and f_data["taint_source"]:
+                if f_data["id"] in preserved_taint_priority:
+                    prio = preserved_taint_priority[f_data["id"]]
+                else:
+                    try:
+                        prio = conn.execute(
+                            "SELECT COUNT(*) FROM call_graph WHERE callee_id = ?",
+                            (f_data["id"],),
+                        ).fetchone()[0]
+                    except Exception:
+                        prio = 0
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO taint_queue (function_id, taint_source, queued_at, priority)
-                    VALUES (?, ?, ?, 0)
+                    VALUES (?, ?, ?, ?)
                     """,
-                    (f_data["id"], f_data["taint_source"], now)
+                    (f_data["id"], f_data["taint_source"], now, prio)
                 )
 
     return (

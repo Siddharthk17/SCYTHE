@@ -4,7 +4,10 @@ import os
 import time
 import sqlite3
 from datetime import datetime, timezone
-import anthropic
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
+    import anthropic
 
 try:
     from dotenv import load_dotenv
@@ -31,19 +34,31 @@ SYSTEM_INSTRUCTION: str = (
     "Respond with a JSON array only. No markdown code fences, no preamble, no trailing commentary — the response must be valid JSON starting with `[` and ending with `]`."
 )
 
-def get_anthropic_client() -> anthropic.Anthropic:
-    """Return an instantiated Anthropic client, checking for the API key lazily."""
+def get_anthropic_client() -> "anthropic.Anthropic":
+    """Return an instantiated Anthropic client, checking for the API key lazily.
+
+    The anthropic SDK is imported lazily so that offline commands
+    (ctx init, ctx status, ctx summarize --dry-run) work without the
+    dependency installed and without an API key configured.
+    """
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY is not set. Required for 'ctx summarize' / 'ctx update'.")
-    return anthropic.Anthropic(api_key=api_key)
+    try:
+        import anthropic as _anthropic
+    except ImportError as err:
+        raise ImportError(
+            "The 'anthropic' package is required for 'ctx summarize' / 'ctx update'. "
+            "Install it with: pip install anthropic"
+        ) from err
+    return _anthropic.Anthropic(api_key=api_key)
 
 def get_model_name() -> str:
     """Get the model name from CTX_LLM_MODEL environment variable or default to claude-haiku-4-5-20251001."""
     return os.environ.get("CTX_LLM_MODEL", "claude-haiku-4-5-20251001")
 
 def call_llm_with_retry(
-    client: anthropic.Anthropic,
+    client: "Any",
     model: str,
     system_prompt: str,
     user_content: str,
@@ -51,11 +66,26 @@ def call_llm_with_retry(
 ) -> tuple[str, int, int]:
     """Call the Anthropic API with retry and exponential backoff on transient errors.
 
+    Retries 3 attempts with base delay 2s on 429/5xx. Logs a warning on
+    each retry. Raises the last error if all attempts fail — callers must
+    catch per-batch so one failed batch never aborts the whole run.
+
     Returns (response_text, input_tokens, output_tokens).
     Raises the last error if all retry attempts fail.
     """
     attempts = 3
     delay = 2
+    # Resolve transient-error types lazily so this module imports without anthropic.
+    try:
+        import anthropic as _anthropic
+
+        _transient_types: tuple[type[BaseException], ...] = (
+            _anthropic.RateLimitError,
+            _anthropic.InternalServerError,
+            _anthropic.APIStatusError,
+        )
+    except ImportError:
+        _transient_types = ()
     for attempt in range(attempts):
         try:
             message = client.messages.create(
@@ -76,7 +106,9 @@ def call_llm_with_retry(
             return response_text, input_tokens, output_tokens
         except Exception as e:
             status_code = getattr(e, "status_code", None)
-            is_transient = status_code in (429, 500, 502, 503, 504) or isinstance(e, (anthropic.RateLimitError, anthropic.InternalServerError))
+            is_transient = status_code in (429, 500, 502, 503, 504) or (
+                bool(_transient_types) and isinstance(e, _transient_types)
+            )
 
             if is_transient and attempt < attempts - 1:
                 logger.warning(
@@ -92,23 +124,32 @@ def call_llm_with_retry(
 def parse_response(text: str) -> list[dict]:
     """Defensively clean and parse the JSON array response from the model.
 
+    Strips ``` / ```json fences (models wrap raw JSON anyway) before
+    json.loads. On failure raises with a truncated raw preview so callers
+    can log the offending payload together with the batch file paths.
+
     Raises ValueError if the response is empty, contains only fence markers,
-    or is not a JSON array.
+    or is not a JSON array. Raises json.JSONDecodeError on malformed JSON.
     """
     if not text or not text.strip():
         raise ValueError("Empty response from LLM — no content received")
     cleaned = text.strip()
     if cleaned.startswith("```"):
-        cleaned = cleaned.split("\n", 1)[1]
-        cleaned = cleaned.rsplit("```", 1)[0]
-    if cleaned.startswith("json"):
-        if "\n" in cleaned:
-            cleaned = cleaned.split("\n", 1)[1]
+        parts = cleaned.split("\n", 1)
+        cleaned = parts[1] if len(parts) > 1 else ""
+        if "```" in cleaned:
+            cleaned = cleaned.rsplit("```", 1)[0]
+    if cleaned.lstrip().startswith("json"):
+        stripped = cleaned.lstrip()
+        if "\n" in stripped:
+            cleaned = stripped.split("\n", 1)[1]
         else:
-            cleaned = cleaned[4:]
+            cleaned = stripped[4:]
     cleaned = cleaned.strip()
     if not cleaned:
         raise ValueError("Response contained only fence markers — no JSON content")
+    # Let json.JSONDecodeError (a ValueError subclass) propagate — callers
+    # catch per-batch, log raw response + file paths, and continue.
     result = json.loads(cleaned)
     if not isinstance(result, list):
         raise ValueError(f"Expected JSON array from LLM, got {type(result).__name__}")
@@ -119,7 +160,13 @@ def batch_files(
     max_files_per_batch: int = 20,
     max_tokens_per_batch: int = 50000
 ) -> list[list[dict]]:
-    """Group file payloads into batches bounded by file count and estimated input token count."""
+    """Group file payloads into batches bounded by file count and estimated input size.
+
+    A batch closes when either 20 files or ~50,000 estimated input tokens
+    (len(json) // 4 char-based estimate) is reached, whichever comes first.
+    A single file whose payload alone exceeds the token budget forms its
+    own batch. ctx update <file> is always a batch of one.
+    """
     if max_files_per_batch < 1:
         raise ValueError(f"max_files_per_batch must be >= 1, got {max_files_per_batch}")
     batches = []
@@ -142,6 +189,15 @@ def batch_files(
 def apply_summary_batch(conn: sqlite3.Connection, parsed_results: list[dict]) -> tuple[int, int]:
     """Apply the parsed summary results to the database and clean up taint queue.
 
+    File-level update (purpose/summary/danger, confidence=1.0, is_stale=0)
+    runs when the request asked for it (purpose_needs_update, default True
+    per Week 2 spec) OR when the model returned file-level fields anyway.
+    Taint-only files (purpose_needs_update=False) intentionally skip the
+    file row — they are already fresh (is_stale=0, confidence=1.0) and only
+    their tainted functions need refresh. Function updates always reset
+    confidence=1.0, is_stale=0, is_tainted=0, taint_source=NULL and delete
+    the corresponding taint_queue row.
+
     Returns (files_updated, functions_updated).
     """
     files_updated = 0
@@ -155,7 +211,14 @@ def apply_summary_batch(conn: sqlite3.Connection, parsed_results: list[dict]) ->
             if not path:
                 continue
 
-            if purpose_needs_update:
+            # Spec-default is unconditional file update (flag defaults True).
+            # Taint-only optimization (flag False) skips the already-fresh
+            # file row unless the model returned file fields anyway.
+            wants_file_update = purpose_needs_update or any(
+                k in file_obj for k in ("purpose", "summary", "danger")
+            )
+
+            if wants_file_update:
                 purpose = file_obj.get("purpose")
                 summary = file_obj.get("summary")
                 danger = file_obj.get("danger")

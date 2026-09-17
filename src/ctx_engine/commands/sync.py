@@ -1,6 +1,5 @@
 import logging
 import json
-import sqlite3
 from pathlib import Path
 from ctx_engine.db import connect
 from ctx_engine.discovery import discover_parseable_files
@@ -34,26 +33,22 @@ def run_sync(repo_root: Path, dry_run: bool = False) -> None:
     conn = connect(db_path)
     parseable = discover_parseable_files(repo_root)
 
-    before = conn.execute("SELECT COUNT(*) FROM files WHERE is_stale = 1").fetchone()[0]
-    before_taint = conn.execute("SELECT COUNT(*) FROM functions WHERE is_tainted = 1").fetchone()[0]
-    before_stale_funcs = conn.execute("SELECT COUNT(*) FROM functions WHERE is_stale = 1").fetchone()[0]
-
     parse_error_count, parse_error_paths, changed_func_ids = run_reindex_pipeline(conn, repo_root, parseable)
 
-    after = conn.execute("SELECT COUNT(*) FROM files WHERE is_stale = 1").fetchone()[0]
-    after_taint = conn.execute("SELECT COUNT(*) FROM functions WHERE is_tainted = 1").fetchone()[0]
-    after_stale_funcs = conn.execute("SELECT COUNT(*) FROM functions WHERE is_stale = 1").fetchone()[0]
+    # Report absolute post-reindex state (not before/after deltas): Phase 1
+    # only adds stale/taint flags, but pre-existing flags from a prior
+    # skipped/failed summarize must still be visible in the report and in
+    # the Phase 2 cost estimate.
+    stale_files = conn.execute("SELECT COUNT(*) FROM files WHERE is_stale = 1").fetchone()[0]
+    tainted_funcs = conn.execute("SELECT COUNT(*) FROM functions WHERE is_tainted = 1").fetchone()[0]
+    stale_funcs = conn.execute("SELECT COUNT(*) FROM functions WHERE is_stale = 1").fetchone()[0]
     total_files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
 
-    stale_files_delta = max(0, after - before)
-    stale_funcs_delta = max(0, after_stale_funcs - before_stale_funcs)
-    taint_delta = max(0, after_taint - before_taint)
-
-    unchanged = total_files - stale_files_delta
+    unchanged = total_files - stale_files
 
     print("  Phase 1: reindex")
-    if stale_files_delta > 0 or taint_delta > 0 or stale_funcs_delta > 0:
-        print(f"    {stale_files_delta} files changed — {stale_funcs_delta} functions stale, {taint_delta} tainted")
+    if stale_files > 0 or tainted_funcs > 0 or stale_funcs > 0:
+        print(f"    {stale_files} files changed — {stale_funcs} functions stale, {tainted_funcs} tainted")
     else:
         print("    No files changed.")
     print(f"    ({unchanged} files unchanged — hashes matched, metadata preserved)")

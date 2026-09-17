@@ -3,14 +3,17 @@ import logging
 import sqlite3
 from pathlib import Path
 from ctx_engine.db import connect
+# llm_client itself no longer imports anthropic at module load (lazy
+# inside get_anthropic_client), so importing these names here is safe for
+# --dry-run offline use and keeps unittest.mock.patch targets stable.
 from ctx_engine.intelligence.llm_client import (
+    SYSTEM_INSTRUCTION,
+    apply_summary_batch,
+    batch_files,
+    call_llm_with_retry,
     get_anthropic_client,
     get_model_name,
-    call_llm_with_retry,
     parse_response,
-    batch_files,
-    apply_summary_batch,
-    SYSTEM_INSTRUCTION,
 )
 
 logger = logging.getLogger("ctx")
@@ -61,18 +64,41 @@ def get_summarize_selection(
     """
     if force:
         files_rows = conn.execute("SELECT path, purpose, summary, danger, exports, imports, used_by_count, is_stale FROM files;").fetchall()
+    elif path_filter is not None and len(path_filter) == 0:
+        # Empty changed-set: fall through to the full selection query so
+        # pre-existing stale/tainted rows are never silently dropped.
+        files_rows = conn.execute(
+            """
+            SELECT DISTINCT f.path, f.purpose, f.summary, f.danger, f.exports, f.imports, f.used_by_count, f.is_stale
+            FROM files f
+            WHERE f.purpose IS NULL
+               OR f.is_stale = 1
+               OR EXISTS (
+                    SELECT 1 FROM functions fn
+                    WHERE fn.file = f.path
+                      AND fn.is_tainted = 1
+                )
+            """
+        ).fetchall()
     elif path_filter is not None:
+        # path_filter is Phase 1's changed-file set (sync optimization).
+        # It must remain a superset filter: files outside the changed set
+        # that still need work (stale, NULL purpose, or tainted) cannot be
+        # dropped, otherwise a prior skipped/failed summarize would leave
+        # stale rows behind forever.
         placeholders = ",".join("?" for _ in path_filter)
         files_rows = conn.execute(
             f"""
             SELECT DISTINCT f.path, f.purpose, f.summary, f.danger, f.exports, f.imports, f.used_by_count, f.is_stale
             FROM files f
             WHERE f.path IN ({placeholders})
+               OR f.purpose IS NULL
+               OR f.is_stale = 1
                OR EXISTS (
-                   SELECT 1 FROM functions fn
-                   WHERE fn.file = f.path
-                     AND fn.is_tainted = 1
-               )
+                    SELECT 1 FROM functions fn
+                    WHERE fn.file = f.path
+                      AND fn.is_tainted = 1
+                )
             """,
             list(path_filter)
         ).fetchall()
@@ -105,7 +131,16 @@ def get_summarize_selection(
 
         funcs_payload: list[dict] = []
         for func_row in funcs_rows:
-            needs_sum = force or func_row["is_stale"] == 1 or func_row["summary"] is None or (is_taint_only and func_row["is_tainted"] == 1)
+            # Tainted functions always need re-summary regardless of the
+            # file-level state: a tainted-but-not-stale function inside an
+            # otherwise stale file must still be sent to the LLM so its
+            # taint_queue row gets cleared by the bulk path.
+            needs_sum = (
+                force
+                or func_row["is_stale"] == 1
+                or func_row["summary"] is None
+                or func_row["is_tainted"] == 1
+            )
 
             func_data = {
                 "id": func_row["id"],
@@ -177,6 +212,11 @@ def run_summarize(
         conn.close()
         return
 
+    # Offline-safe: llm_client no longer imports anthropic at module load,
+    # so reaching here without a key still fails clearly inside
+    # get_anthropic_client (not at import). Module-level names are used
+    # (not function-local re-imports) so unittest.mock.patch targets on
+    # ctx_engine.commands.summarize keep working.
     client = get_anthropic_client()
     model = get_model_name()
 
@@ -188,7 +228,9 @@ def run_summarize(
 
     for i, batch in enumerate(batches):
         batch_funcs_count = sum(1 for f in batch for func in f["functions"] if func["needs_summary"])
+        batch_paths = [f.get("path", "?") for f in batch]
         user_content = json.dumps(batch)
+        response_text = ""
         try:
             response_text, in_tok, out_tok = call_llm_with_retry(
                 client, model, SYSTEM_INSTRUCTION, user_content
@@ -203,7 +245,13 @@ def run_summarize(
 
             print(f"[{i+1}/{len(batches)}] batch: {len(batch)} files, {batch_funcs_count} functions -> done (in: {in_tok:,} tok, out: {out_tok:,} tok)")
         except Exception as e:
-            logger.error("Failed to process batch %d: %s", i + 1, e)
+            # Week 2 contract: log raw response + batch file paths, skip
+            # only this batch, continue with the next — never crash the run.
+            raw_preview = (response_text or "")[:2000]
+            logger.error(
+                "Failed to process batch %d files=%s error=%s raw_preview=%r",
+                i + 1, batch_paths, e, raw_preview,
+            )
             for f in batch:
                 skipped_files.append(f["path"])
             print(f"[{i+1}/{len(batches)}] batch: {len(batch)} files, {batch_funcs_count} functions -> FAILED (skipped)")
