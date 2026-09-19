@@ -67,7 +67,7 @@ def discover_parseable_files(repo_root: Path) -> dict[str, str]:
     all_paths = discover_all_tracked_paths(repo_root)
     parseable_map: dict[str, str] = {}
     for relative_path in all_paths:
-        ext = Path(relative_path).suffix
+        ext = Path(relative_path).suffix.lower()
         if ext in EXTENSION_TO_LANGUAGE:
             parseable_map[relative_path] = EXTENSION_TO_LANGUAGE[ext]
     return parseable_map

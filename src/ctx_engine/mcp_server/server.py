@@ -8,7 +8,7 @@ from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent, CallToolResult, ServerCapabilities, ToolsCapability
 
-from ctx_engine.db.connection import connect, get_pooled_connection
+from ctx_engine.db.connection import connect
 from ctx_engine.mcp_server.tools.read_tools import (
     handle_get_context,
     handle_get_function,
@@ -157,11 +157,11 @@ TOOLS: list[Tool] = [
         inputSchema={
             "type": "object",
             "properties": {
-                "scope": {"type": "string", "description": "Scope: '*' (global, default) or a file path"},
+                "scope": {"type": "string", "description": "Scope: '*' (global) or a file path or function id"},
                 "description": {"type": "string", "description": "Description of the danger"},
                 "reason": {"type": "string", "description": "Why this is dangerous"},
             },
-            "required": ["description"],
+            "required": ["scope", "description", "reason"],
         },
     ),
     Tool(
@@ -181,12 +181,12 @@ TOOLS: list[Tool] = [
         inputSchema={
             "type": "object",
             "properties": {
-                "scope": {"type": "string", "description": "Scope: '*' (global, default) or a file path"},
+                "scope": {"type": "string", "description": "Scope: '*' (global) or a file path, or null for global"},
                 "decision": {"type": "string", "description": "What was decided"},
                 "alternatives": {"type": "string", "description": "Alternatives that were rejected"},
                 "reason": {"type": "string", "description": "Rationale for the decision"},
             },
-            "required": ["decision"],
+            "required": ["decision", "reason"],
         },
     ),
     Tool(
@@ -296,11 +296,131 @@ HANDLERS: dict[str, callable] = {
     "plan": handle_plan,
 }
 
+# ── Week 4 spec aliases (ctx_ prefix) ─────────────────────────────────────
+# The Week 4 build prompt names tools ctx_get_context / ctx_update_file / etc.
+# while the implementation historically exposed bare names (get_context, …).
+# Docs (CLAUDE.md, renderers) reference the ctx_ form. Register both so any
+# client works. Aliases share the same handler and are listed via list_tools.
+_CTX_ALIASES: dict[str, str] = {
+    "ctx_get_context": "get_context",
+    "ctx_get_function": "get_function",
+    "ctx_search": "search",
+    "ctx_get_dangers": "get_dangers",
+    "ctx_get_decisions": "get_decisions",
+    "ctx_get_callers": "get_callers",
+    "ctx_get_tainted": "get_tainted",
+    "ctx_ctx_status": "ctx_status",
+    "ctx_add_danger": "add_danger",
+    "ctx_remove_danger": "remove_danger",
+    "ctx_add_decision": "add_decision",
+    "ctx_log_session": "log_session",
+    "ctx_log_change": "log_change",
+    "ctx_update_file": "update_file",
+    "ctx_update_function": "update_function",
+}
+for _alias, _canonical in _CTX_ALIASES.items():
+    if _alias not in HANDLERS:
+        HANDLERS[_alias] = HANDLERS[_canonical]
+READ_TOOL_NAMES.update(
+    {"ctx_get_context", "ctx_get_function", "ctx_search", "ctx_get_dangers",
+     "ctx_get_decisions", "ctx_get_callers", "ctx_get_tainted"})
+WRITE_TOOL_NAMES.update(
+    {"ctx_add_danger", "ctx_remove_danger", "ctx_add_decision",
+     "ctx_log_session", "ctx_log_change", "ctx_update_file",
+     "ctx_update_function"})
 
-def create_server(repo_root: Path) -> Server:
+
+def _alias_tool_entries() -> list[Tool]:
+    """Build Tool entries for ctx_ aliases mirroring the canonical schemas."""
+    by_name = {t.name: t for t in TOOLS}
+    entries: list[Tool] = []
+    for alias, canonical in _CTX_ALIASES.items():
+        base = by_name.get(canonical)
+        if base is None:
+            continue
+        if any(t.name == alias for t in TOOLS):
+            continue
+        entries.append(Tool(
+            name=alias,
+            description=base.description + f" (alias of {canonical})",
+            inputSchema=base.inputSchema,
+        ))
+    return entries
+
+
+# Append alias entries once so list_tools exposes both forms.
+TOOLS.extend(_alias_tool_entries())
+
+
+def dispatch_tool(
+    name: str,
+    arguments: dict,
+    conn: sqlite3.Connection,
+    repo_root: Path,
+) -> str:
+    """Thin dispatch wrapper (Week 4 spec pattern).
+
+    Server call_tool() uses this so the transport layer stays separate from
+    tool logic. Raises KeyError for unknown tools.
+    """
+    handler = HANDLERS.get(name)
+    if handler is None:
+        # Resolve ctx_ alias explicitly for a clearer error path.
+        canonical = _CTX_ALIASES.get(name)
+        if canonical is not None:
+            handler = HANDLERS.get(canonical)
+    if handler is None:
+        raise KeyError(f"Unknown tool: {name}")
+    return handler(conn, repo_root, arguments or {})
+
+
+def _resolve_paths(
+    first: Path, second: Path | None = None,
+) -> tuple[Path, Path]:
+    """Accept both create_server(repo_root) and create_server(db_path, repo_root).
+
+    The Week 4 spec defines create_server(db_path, repo_root); the
+    implementation historically took create_server(repo_root) and derived the
+    db path. Detect a Path ending in .db (or containing .ctx) as the db path
+    so both call orders work.
+    """
+    if second is None:
+        repo_root = Path(first)
+        db_path = repo_root / ".ctx" / "index.db"
+        return db_path, repo_root
+    a, b = Path(first), Path(second)
+    a_is_db = a.suffix == ".db" or ".ctx" in a.parts
+    b_is_db = b.suffix == ".db" or ".ctx" in b.parts
+    if a_is_db and not b_is_db:
+        return a, b
+    if b_is_db and not a_is_db:
+        return b, a
+    # Ambiguous: assume spec order (db_path, repo_root).
+    return a, b
+
+
+def create_server(
+    repo_root: Path,
+    db_path: Path | None = None,
+    *extra: Path,
+) -> Server:
+    # Accept create_server(repo_root), create_server(repo_root, db_path),
+    # and spec-order create_server(db_path, repo_root). Detect the .db path.
+    if extra:
+        # Two positionals: (first, second) in either order.
+        resolved_db, resolved_root = _resolve_paths(repo_root, extra[0])
+        db_path, repo_root = resolved_db, resolved_root
+    else:
+        resolved_db, resolved_root = _resolve_paths(repo_root, db_path)
+        db_path, repo_root = resolved_db, resolved_root
+    repo_root = Path(repo_root)
+    db_path = Path(db_path)
     app = Server("ctx-mcp")
 
-    db_path = repo_root / ".ctx" / "index.db"
+    # Spec compatibility: expose paths on the instance so handlers/tests can
+    # access them without globals.
+    app._ctx_db_path = db_path  # type: ignore[attr-defined]
+    app._ctx_repo_root = repo_root  # type: ignore[attr-defined]
 
     @app.list_tools()
     async def list_tools() -> list[Tool]:
@@ -311,16 +431,18 @@ def create_server(repo_root: Path) -> Server:
         if arguments is None:
             arguments = {}
 
-        handler = HANDLERS.get(name)
-        if handler is None:
+        if name not in HANDLERS:
             return CallToolResult(
                 content=[TextContent(type="text", text=f"Unknown tool: {name}")],
                 isError=True,
             )
 
-        conn = get_pooled_connection(db_path)
+        # One SQLite connection per tool call (WAL mode: readers never block).
+        # sqlite3 connections are not thread-safe when shared across async
+        # handlers; per-call connections cost <1ms and avoid all races.
+        conn = connect(db_path)
         try:
-            result_text = handler(conn, repo_root, arguments)
+            result_text = dispatch_tool(name, arguments, conn, repo_root)
             return CallToolResult(content=[TextContent(type="text", text=result_text)])
         except Exception as err:
             if name in WRITE_TOOL_NAMES:
@@ -330,9 +452,11 @@ def create_server(repo_root: Path) -> Server:
                 content=[TextContent(type="text", text=f"Error executing {name}: {err}")],
                 isError=True,
             )
-        # NOTE: pooled connection is intentionally NOT closed per-call.
-        # It lives for the lifetime of the thread (the MCP request handler).
-        # WAL mode keeps readers and writers from blocking each other.
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     return app
 

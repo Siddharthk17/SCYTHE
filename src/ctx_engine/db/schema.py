@@ -1,4 +1,5 @@
 # Schema definition for the ctx index database.
+import sqlite3
 
 MIGRATIONS = [
     """
@@ -9,13 +10,15 @@ MIGRATIONS = [
     """,
 ]
 
+
 def apply_migrations(conn) -> None:
+    """Add mtime/file_size if missing. Safe on every init, fresh or migrated."""
     for sql in MIGRATIONS:
         try:
             conn.execute(sql)
-        except conn.OperationalError as e:
+        except sqlite3.OperationalError as e:
             if "duplicate column name" in str(e).lower():
-                pass
+                pass  # Already applied — correct on re-init
             else:
                 raise
 

@@ -225,7 +225,7 @@ def assemble_zone0(
     tainted = [fn for fn in functions if fn["is_tainted"]]
     for fn in tainted:
         parts.append(
-            f"WARNING: TAINTED: {fn['id']}\n"
+            f"⚠ TAINTED: {fn['id']}\n"
             f"  Dependency changed: {fn['taint_source']}\n"
             "  Update this function's summary after reviewing the change."
         )

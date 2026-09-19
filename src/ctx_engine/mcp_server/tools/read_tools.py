@@ -15,11 +15,30 @@ from ctx_engine.hashing import file_content_hash
 logger = logging.getLogger("ctx")
 
 
+def _normalize_call(
+    repo_root: Path | dict | None,
+    arguments: dict | None,
+) -> tuple[Path, dict]:
+    """Support both handle_x(conn, repo_root, args) and handle_x(conn, args)."""
+    if arguments is None and isinstance(repo_root, dict):
+        return Path("."), repo_root
+    if arguments is None:
+        arguments = {}
+    if repo_root is None or isinstance(repo_root, dict):
+        return Path("."), arguments
+    return Path(repo_root), arguments
+
+
 def _get_conn(db_path: Path) -> sqlite3.Connection:
     return connect(db_path)
 
 
-def handle_get_context(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
+def handle_get_context(
+    conn: sqlite3.Connection,
+    repo_root: Path | dict | None,
+    arguments: dict | None = None,
+) -> str:
+    repo_root, arguments = _normalize_call(repo_root, arguments)
     target_file = arguments.get("file", "")
     target_line = arguments.get("line")
 
@@ -41,7 +60,12 @@ def handle_get_context(conn: sqlite3.Connection, repo_root: Path, arguments: dic
     return assemble_context(conn, repo_root, target_file, target_line)
 
 
-def handle_get_function(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
+def handle_get_function(
+    conn: sqlite3.Connection,
+    repo_root: Path | dict | None,
+    arguments: dict | None = None,
+) -> str:
+    repo_root, arguments = _normalize_call(repo_root, arguments)
     func_id = arguments.get("id", "")
     if not func_id:
         return "Error: 'id' argument is required."
@@ -69,14 +93,22 @@ def handle_get_function(conn: sqlite3.Connection, repo_root: Path, arguments: di
             "SELECT content_hash FROM files WHERE path = ?", (file_path,)
         ).fetchone()
         if db_hash_row and db_hash_row["content_hash"] != current_hash:
-            parts.append("[STALE - file has changed since index; run 'ctx update <file>' to refresh]")
+            parts.append(
+                "⚠ SOURCE MAY BE STALE: file has changed since last ctx index.\n"
+                f"  Run 'ctx update {file_path}' to refresh."
+            )
     except Exception as err:
         logger.warning("Cannot read source for %s: %s", file_path, err)
 
     return "\n\n".join(parts)
 
 
-def handle_search(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
+def handle_search(
+    conn: sqlite3.Connection,
+    repo_root: Path | dict | None,
+    arguments: dict | None = None,
+) -> str:
+    repo_root, arguments = _normalize_call(repo_root, arguments)
     query = arguments.get("query", "")
     limit = min(arguments.get("limit", 10), 50)
     if not query:
@@ -146,7 +178,12 @@ def handle_search(conn: sqlite3.Connection, repo_root: Path, arguments: dict) ->
     return header + "\n" + "\n\n".join(numbered)
 
 
-def handle_get_dangers(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
+def handle_get_dangers(
+    conn: sqlite3.Connection,
+    repo_root: Path | dict | None,
+    arguments: dict | None = None,
+) -> str:
+    repo_root, arguments = _normalize_call(repo_root, arguments)
     scope = arguments.get("scope")
 
     if scope:
@@ -173,7 +210,12 @@ def handle_get_dangers(conn: sqlite3.Connection, repo_root: Path, arguments: dic
     return "\n".join(lines)
 
 
-def handle_get_decisions(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
+def handle_get_decisions(
+    conn: sqlite3.Connection,
+    repo_root: Path | dict | None,
+    arguments: dict | None = None,
+) -> str:
+    repo_root, arguments = _normalize_call(repo_root, arguments)
     scope = arguments.get("scope")
 
     if scope:
@@ -201,7 +243,12 @@ def handle_get_decisions(conn: sqlite3.Connection, repo_root: Path, arguments: d
     return "\n".join(lines)
 
 
-def handle_get_callers(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
+def handle_get_callers(
+    conn: sqlite3.Connection,
+    repo_root: Path | dict | None,
+    arguments: dict | None = None,
+) -> str:
+    repo_root, arguments = _normalize_call(repo_root, arguments)
     function_id = arguments.get("function_id", "")
     if not function_id:
         return "Error: 'function_id' argument is required."
@@ -230,19 +277,30 @@ def handle_get_callers(conn: sqlite3.Connection, repo_root: Path, arguments: dic
     return "\n\n".join(parts)
 
 
-def handle_get_tainted(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
+def handle_get_tainted(
+    conn: sqlite3.Connection,
+    repo_root: Path | dict | None,
+    arguments: dict | None = None,
+) -> str:
+    repo_root, arguments = _normalize_call(repo_root, arguments)
     file_filter = arguments.get("file")
 
     if file_filter:
         rows = conn.execute(
-            """SELECT id, taint_source, updated_at FROM functions
-               WHERE is_tainted = 1 AND file = ?""",
+            """SELECT fn.id, fn.taint_source, fn.updated_at,
+                      tq.queued_at, tq.priority
+               FROM functions fn
+               LEFT JOIN taint_queue tq ON tq.function_id = fn.id
+               WHERE fn.is_tainted = 1 AND fn.file = ?""",
             (file_filter,),
         ).fetchall()
     else:
         rows = conn.execute(
-            """SELECT id, taint_source, updated_at FROM functions
-               WHERE is_tainted = 1"""
+            """SELECT fn.id, fn.taint_source, fn.updated_at,
+                      tq.queued_at, tq.priority
+               FROM functions fn
+               LEFT JOIN taint_queue tq ON tq.function_id = fn.id
+               WHERE fn.is_tainted = 1"""
         ).fetchall()
 
     if not rows:
@@ -251,14 +309,25 @@ def handle_get_tainted(conn: sqlite3.Connection, repo_root: Path, arguments: dic
     lines = [f"TAINTED FUNCTIONS ({len(rows)}):"]
     for r in rows:
         taint_source = r['taint_source'] or "unknown"
-        updated = r['updated_at'] or "unknown"
+        queued = r['queued_at'] or r['updated_at'] or "unknown"
         lines.append(f"  {r['id']}")
         lines.append(f"    Tainted by: {taint_source}")
-        lines.append(f"    Queued since: {updated}")
+        lines.append(f"    Queued since: {queued}")
+        try:
+            priority = r['priority']
+        except (IndexError, KeyError):
+            priority = None
+        if priority is not None:
+            lines.append(f"    Priority: {priority}")
     return "\n".join(lines)
 
 
-def handle_ctx_status(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
+def handle_ctx_status(
+    conn: sqlite3.Connection,
+    repo_root: Path | dict | None,
+    arguments: dict | None = None,
+) -> str:
+    repo_root, arguments = _normalize_call(repo_root, arguments)
     file_count = conn.execute("SELECT count(*) FROM files").fetchone()[0]
     func_count = conn.execute("SELECT count(*) FROM functions").fetchone()[0]
     stale_funcs = conn.execute("SELECT count(*) FROM functions WHERE is_stale = 1").fetchone()[0]

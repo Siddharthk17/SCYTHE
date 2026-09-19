@@ -115,6 +115,11 @@ class ParseResult:
 
 
 def parse_one_file(args: tuple[str, str, str]) -> ParseResult:
+    """Parse one file in a worker process. Top-level so it stays picklable.
+
+    Workers do CPU-heavy work only (tree-sitter parse + hashing). The main
+    thread owns all SQLite writes via apply_parse_result.
+    """
     rel_path, language, repo_root_str = args
     repo_root = Path(repo_root_str)
     abs_path = repo_root / rel_path
@@ -126,12 +131,19 @@ def parse_one_file(args: tuple[str, str, str]) -> ParseResult:
         adapter = ADAPTERS[language]
         file_structure = adapter.extract(tree, source)
         file_sem_hash = file_semantic_hash(tree, source, language)
-        fn_hashes = {
-            fn.name: function_semantic_hash(fn.node, source, language)
-            for fn in file_structure.functions
-        }
+        # Qualified IDs with the same dedup rule as reindex_file so the
+        # parallel and sequential paths produce identical hashes.
+        seen: set[str] = set()
+        fn_hashes: dict[str, str] = {}
+        for fn in file_structure.functions:
+            fid = function_id_for(rel_path, fn)
+            if fid in seen:
+                fid = f"{fid}@{fn.line_start}"
+            seen.add(fid)
+            fn_hashes[fid] = function_semantic_hash(fn.node, source, language)
 
-        # Strip unpicklable AST node references for cross-process transport
+        # Strip unpicklable AST node references for cross-process transport.
+        # Call-graph nodes are re-resolved in the main thread (Pass 3).
         stripped_funcs = []
         for fn in file_structure.functions:
             stripped_funcs.append(
@@ -178,6 +190,235 @@ def parse_one_file(args: tuple[str, str, str]) -> ParseResult:
             parse_had_errors=True,
             error=str(e),
         )
+
+def apply_parse_result(
+    conn: sqlite3.Connection,
+    repo_root: Path,
+    result: ParseResult,
+) -> tuple[set[str], list[tuple[str, list[str]]], dict, bool]:
+    """Write one worker ParseResult to SQLite (main thread only).
+
+    Mirrors reindex_file Pass 1 exactly, but reuses the worker's parse
+    instead of parsing again. Returns the same tuple as reindex_file.
+    """
+    conn.row_factory = sqlite3.Row
+    now = datetime.now(timezone.utc).isoformat()
+    path = result.rel_path
+    struct = result.file_structure
+    file_sem_hash = result.file_semantic_hash
+    content_hash_val = result.content_hash
+
+    old_file = conn.execute(
+        "SELECT semantic_hash, confidence, purpose, summary, danger, is_stale, indexed_at FROM files WHERE path = ?",
+        (path,),
+    ).fetchone()
+
+    if old_file is None:
+        file_purpose = None
+        file_summary = None
+        file_danger = None
+        file_confidence = 1.0
+        file_is_stale = 1
+        file_indexed_at = now
+    elif old_file["semantic_hash"] == file_sem_hash:
+        file_purpose = old_file["purpose"]
+        file_summary = old_file["summary"]
+        file_danger = old_file["danger"]
+        file_confidence = old_file["confidence"]
+        file_is_stale = old_file["is_stale"]
+        file_indexed_at = old_file["indexed_at"] or now
+    else:
+        file_purpose = old_file["purpose"]
+        file_summary = old_file["summary"]
+        file_danger = old_file["danger"]
+        file_confidence = decay(old_file["confidence"])
+        file_is_stale = 1
+        file_indexed_at = old_file["indexed_at"] or now
+
+    old_funcs = {
+        row["id"]: dict(row)
+        for row in conn.execute(
+            "SELECT id, semantic_hash, confidence, summary, summary_long, danger, is_stale, is_tainted, taint_source FROM functions WHERE file = ?",
+            (path,),
+        ).fetchall()
+    }
+
+    seen_ids: set[str] = set()
+    new_funcs_to_insert: list[dict] = []
+    changed_function_ids: set[str] = set()
+
+    for func in struct.functions:
+        func_id = function_id_for(path, func)
+        if func_id in seen_ids:
+            func_id = f"{func_id}@{func.line_start}"
+        seen_ids.add(func_id)
+        func_sem_hash = result.function_hashes.get(func_id, "")
+
+        if func_id not in old_funcs:
+            func_summary = None
+            func_summary_long = None
+            func_danger = None
+            func_confidence = 1.0
+            func_is_stale = 1
+            func_is_tainted = 0
+            func_taint_source = None
+            changed_function_ids.add(func_id)
+        else:
+            old_func = old_funcs[func_id]
+            if old_func["semantic_hash"] == func_sem_hash:
+                func_summary = old_func["summary"]
+                func_summary_long = old_func["summary_long"]
+                func_danger = old_func["danger"]
+                func_confidence = old_func["confidence"]
+                func_is_stale = old_func["is_stale"]
+                func_is_tainted = old_func["is_tainted"]
+                func_taint_source = old_func["taint_source"]
+            else:
+                func_summary = old_func["summary"]
+                func_summary_long = old_func["summary_long"]
+                func_danger = old_func["danger"]
+                func_confidence = decay(old_func["confidence"])
+                func_is_stale = 1
+                func_is_tainted = old_func["is_tainted"]
+                func_taint_source = old_func["taint_source"]
+                changed_function_ids.add(func_id)
+
+        new_funcs_to_insert.append(
+            {
+                "id": func_id,
+                "class_name": func.class_name,
+                "name": func.name,
+                "signature": func.signature,
+                "summary": func_summary,
+                "summary_long": func_summary_long,
+                "mutates": json.dumps(func.mutates),
+                "danger": func_danger,
+                "line_start": func.line_start,
+                "line_end": func.line_end,
+                "semantic_hash": func_sem_hash,
+                "is_tainted": func_is_tainted,
+                "taint_source": func_taint_source,
+                "confidence": func_confidence,
+                "is_stale": func_is_stale,
+                "func_record": func,
+            }
+        )
+
+    removed_function_ids_with_caller_snapshots = []
+    for old_id in old_funcs:
+        if old_id not in seen_ids:
+            callers = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT caller_id FROM call_graph WHERE callee_id = ?",
+                    (old_id,),
+                ).fetchall()
+            ]
+            removed_function_ids_with_caller_snapshots.append((old_id, callers))
+
+    preserved_taint_priority: dict[str, int] = {}
+    try:
+        for prow in conn.execute(
+            "SELECT function_id, priority FROM taint_queue WHERE function_id IN "
+            "(SELECT id FROM functions WHERE file = ?)",
+            (path,),
+        ).fetchall():
+            preserved_taint_priority[prow["function_id"]] = prow["priority"]
+    except Exception:
+        preserved_taint_priority = {}
+
+    with conn:
+        conn.execute(
+            "DELETE FROM call_graph WHERE caller_id IN (SELECT id FROM functions WHERE file = ?)",
+            (path,),
+        )
+        conn.execute("DELETE FROM functions WHERE file = ?", (path,))
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO files (
+                path, system, purpose, exports, imports, used_by, used_by_count,
+                summary, danger, last_change, semantic_hash, content_hash,
+                confidence, is_stale, updated_at, indexed_at,
+                mtime, file_size
+            ) VALUES (?, NULL, ?, ?, NULL, NULL, 0, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                path,
+                file_purpose,
+                json.dumps(struct.exports),
+                file_summary,
+                file_danger,
+                file_sem_hash,
+                content_hash_val,
+                file_confidence,
+                file_is_stale,
+                now,
+                file_indexed_at,
+                result.mtime,
+                result.file_size,
+            ),
+        )
+        for f_data in new_funcs_to_insert:
+            conn.execute(
+                """
+                INSERT INTO functions (
+                    id, file, class_name, name, signature, summary, summary_long,
+                    mutates, danger, line_start, line_end, semantic_hash, is_tainted,
+                    taint_source, confidence, is_stale, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f_data["id"],
+                    path,
+                    f_data["class_name"],
+                    f_data["name"],
+                    f_data["signature"],
+                    f_data["summary"],
+                    f_data["summary_long"],
+                    f_data["mutates"],
+                    f_data["danger"],
+                    f_data["line_start"],
+                    f_data["line_end"],
+                    f_data["semantic_hash"],
+                    f_data["is_tainted"],
+                    f_data["taint_source"],
+                    f_data["confidence"],
+                    f_data["is_stale"],
+                    now,
+                ),
+            )
+        for f_data in new_funcs_to_insert:
+            if f_data["is_tainted"] and f_data["taint_source"]:
+                if f_data["id"] in preserved_taint_priority:
+                    prio = preserved_taint_priority[f_data["id"]]
+                else:
+                    try:
+                        prio = conn.execute(
+                            "SELECT COUNT(*) FROM call_graph WHERE callee_id = ?",
+                            (f_data["id"],),
+                        ).fetchone()[0]
+                    except Exception:
+                        prio = 0
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO taint_queue (function_id, taint_source, queued_at, priority)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (f_data["id"], f_data["taint_source"], now, prio),
+                )
+
+    return (
+        changed_function_ids,
+        removed_function_ids_with_caller_snapshots,
+        {
+            "exports": struct.exports,
+            "imports_raw": struct.imports_raw,
+            "class_superclasses": struct.class_superclasses,
+            "functions": new_funcs_to_insert,
+        },
+        result.parse_had_errors,
+    )
+
 
 def reindex_single_file(
     conn: sqlite3.Connection,
@@ -492,7 +733,7 @@ def run_reindex_pipeline(
     class_superclasses = {}
 
     for p in all_paths:
-        ext = Path(p).suffix
+        ext = Path(p).suffix.lower()
         lang = EXTENSION_TO_LANGUAGE.get(ext)
         if not lang:
             continue
@@ -587,11 +828,57 @@ def run_reindex_pipeline(
     for file_path, funcs_to_populate in callers_by_file.items():
         if file_path in reindexed_extractions:
             ext_funcs = reindexed_extractions[file_path]["functions"]
-            for f_info in funcs_to_populate:
-                match = next((ef for ef in ext_funcs if ef["id"] == f_info["id"]), None)
-                if match:
-                    f_info["_node"] = match["func_record"].node
-                    f_info["_language"] = files_languages.get(file_path)
+            needs_reparse = any(
+                (next((ef for ef in ext_funcs if ef["id"] == f_info["id"]), None) is None)
+                or (
+                    next(
+                        (ef for ef in ext_funcs if ef["id"] == f_info["id"]),
+                        None,
+                    )["func_record"].node
+                    is None
+                )
+                for f_info in funcs_to_populate
+            )
+            if needs_reparse:
+                # Parallel workers strip AST nodes for pickling; re-parse
+                # this changed file once in the main thread for call nodes.
+                try:
+                    lang = files_languages.get(file_path)
+                    if lang:
+                        file_abspath = repo_root / file_path
+                        source = file_abspath.read_bytes()
+                        parser = get_parser(lang)
+                        tree = parser.parse(source)
+                        adapter = ADAPTERS[lang]
+                        struct = adapter.extract(tree, source)
+                        seen_ids = set()
+                        node_by_id: dict[str, object] = {}
+                        for func in struct.functions:
+                            func_id = function_id_for(file_path, func)
+                            if func_id in seen_ids:
+                                func_id = f"{func_id}@{func.line_start}"
+                            seen_ids.add(func_id)
+                            node_by_id[func_id] = func.node
+                        for f_info in funcs_to_populate:
+                            f_info["_node"] = node_by_id.get(f_info["id"])
+                            f_info["_language"] = lang
+                    else:
+                        for f_info in funcs_to_populate:
+                            f_info["_node"] = None
+                except Exception as err:
+                    logger.warning(
+                        "Could not parse file %s for call graph resolution: %s",
+                        file_path,
+                        err,
+                    )
+            else:
+                for f_info in funcs_to_populate:
+                    match = next(
+                        (ef for ef in ext_funcs if ef["id"] == f_info["id"]), None
+                    )
+                    if match:
+                        f_info["_node"] = match["func_record"].node
+                        f_info["_language"] = files_languages.get(file_path)
         else:
             lang = files_languages.get(file_path)
             if lang:
@@ -647,6 +934,234 @@ def run_reindex_pipeline(
     for cid in all_changed_func_ids:
         propagate_taint(conn, cid)
     for rid, snapshot_callers in all_removed_funcs_snapshots:
+        propagate_taint(conn, rid, caller_snapshot=snapshot_callers)
+
+    return parse_error_count, parse_error_paths, all_changed_func_ids
+
+
+def run_reindex_pipeline_from_results(
+    conn: sqlite3.Connection,
+    repo_root: Path,
+    parse_results: list["ParseResult"],
+    files_to_reindex: dict[str, str],
+) -> tuple[int, list[str], set[str]]:
+    """Pass 1 from worker results, Passes 2-4 via the shared pipeline.
+
+    Workers parse, main thread writes. Call-graph nodes stripped for
+    pickling are re-resolved in Pass 3 by re-parsing only the changed
+    files that need nodes.
+    """
+    conn.row_factory = sqlite3.Row
+    all_changed_func_ids: set[str] = set()
+    all_removed: list[tuple[str, list[str]]] = []
+    reindexed_extractions: dict[str, dict] = {}
+    parse_error_count = 0
+    parse_error_paths: list[str] = []
+
+    by_path = {r.rel_path: r for r in parse_results}
+    for path in files_to_reindex:
+        result = by_path.get(path)
+        if result is None:
+            continue
+        if result.error:
+            parse_error_count += 1
+            parse_error_paths.append(path)
+            continue
+        c_ids, r_snap, ext_data, had_err = apply_parse_result(
+            conn, repo_root, result
+        )
+        all_changed_func_ids.update(c_ids)
+        all_removed.extend(r_snap)
+        reindexed_extractions[path] = ext_data
+        if had_err:
+            parse_error_count += 1
+            parse_error_paths.append(path)
+
+    now = datetime.now(timezone.utc).isoformat()
+    db_files = [row["path"] for row in conn.execute("SELECT path FROM files").fetchall()]
+    all_paths = sorted(list(set(db_files + list(files_to_reindex.keys()))))
+
+    files_languages: dict[str, str] = {}
+    files_raw_imports: dict[str, list] = {}
+    files_exports: dict[str, list] = {}
+    class_superclasses: dict[str, dict] = {}
+
+    for p in all_paths:
+        ext = Path(p).suffix.lower()
+        lang = EXTENSION_TO_LANGUAGE.get(ext)
+        if not lang:
+            continue
+        files_languages[p] = lang
+        if p in reindexed_extractions:
+            ext_data = reindexed_extractions[p]
+            files_raw_imports[p] = ext_data["imports_raw"]
+            files_exports[p] = ext_data["exports"]
+            class_superclasses[p] = ext_data["class_superclasses"]
+        else:
+            try:
+                file_abspath = repo_root / p
+                source = file_abspath.read_bytes()
+                parser = get_parser(lang)
+                tree = parser.parse(source)
+                adapter = ADAPTERS[lang]
+                struct = adapter.extract(tree, source)
+                files_raw_imports[p] = struct.imports_raw
+                files_exports[p] = struct.exports
+                class_superclasses[p] = struct.class_superclasses
+            except Exception as err:
+                logger.warning(
+                    "Could not parse file %s for import resolution: %s", p, err
+                )
+                files_raw_imports[p] = []
+                exports_row = conn.execute(
+                    "SELECT exports FROM files WHERE path = ?", (p,)
+                ).fetchone()
+                files_exports[p] = (
+                    json.loads(exports_row["exports"])
+                    if (exports_row and exports_row["exports"])
+                    else []
+                )
+                class_superclasses[p] = {}
+
+    resolved_imports, used_by = resolve_imports_graph(
+        files_languages, files_raw_imports, files_exports, repo_root
+    )
+    with conn:
+        for p in all_paths:
+            imps = resolved_imports.get(p, [])
+            ub = used_by.get(p, [])
+            conn.execute(
+                """
+                UPDATE files SET
+                    imports = ?,
+                    used_by = ?,
+                    used_by_count = ?,
+                    updated_at = ?
+                WHERE path = ?
+                """,
+                (json.dumps(imps), json.dumps(ub), len(ub), now, p),
+            )
+
+    reindexed_files_list = list(files_to_reindex.keys())
+    caller_ids_to_resolve: set[str] = set()
+    for p in reindexed_files_list:
+        for row in conn.execute(
+            "SELECT id FROM functions WHERE file = ?", (p,)
+        ).fetchall():
+            caller_ids_to_resolve.add(row[0])
+    if reindexed_files_list:
+        placeholders = ",".join("?" for _ in reindexed_files_list)
+        external_callers = [
+            row[0]
+            for row in conn.execute(
+                f"SELECT DISTINCT caller_id FROM call_graph WHERE callee_file IN ({placeholders})",
+                reindexed_files_list,
+            ).fetchall()
+        ]
+        caller_ids_to_resolve.update(external_callers)
+    with conn:
+        if caller_ids_to_resolve:
+            caller_list = list(caller_ids_to_resolve)
+            for i in range(0, len(caller_list), 500):
+                chunk = caller_list[i : i + 500]
+                conn.execute(
+                    "DELETE FROM call_graph WHERE caller_id IN ({})".format(
+                        ",".join("?" for _ in chunk)
+                    ),
+                    chunk,
+                )
+    all_db_funcs = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT id, file, class_name, name, signature FROM functions"
+        ).fetchall()
+    ]
+    callers_by_file: dict[str, list[dict]] = {}
+    for cid in caller_ids_to_resolve:
+        func_info = next((f for f in all_db_funcs if f["id"] == cid), None)
+        if func_info:
+            callers_by_file.setdefault(func_info["file"], []).append(func_info)
+    for file_path, funcs_to_populate in callers_by_file.items():
+        if file_path in reindexed_extractions:
+            try:
+                lang = files_languages.get(file_path)
+                if lang:
+                    file_abspath = repo_root / file_path
+                    source = file_abspath.read_bytes()
+                    parser = get_parser(lang)
+                    tree = parser.parse(source)
+                    adapter = ADAPTERS[lang]
+                    struct = adapter.extract(tree, source)
+                    seen_ids: set[str] = set()
+                    node_by_id: dict[str, object] = {}
+                    for func in struct.functions:
+                        func_id = function_id_for(file_path, func)
+                        if func_id in seen_ids:
+                            func_id = f"{func_id}@{func.line_start}"
+                        seen_ids.add(func_id)
+                        node_by_id[func_id] = func.node
+                    for f_info in funcs_to_populate:
+                        f_info["_node"] = node_by_id.get(f_info["id"])
+                        f_info["_language"] = lang
+            except Exception as err:
+                logger.warning(
+                    "Could not parse file %s for call graph resolution: %s",
+                    file_path,
+                    err,
+                )
+        else:
+            lang = files_languages.get(file_path)
+            if lang:
+                try:
+                    file_abspath = repo_root / file_path
+                    source = file_abspath.read_bytes()
+                    parser = get_parser(lang)
+                    tree = parser.parse(source)
+                    adapter = ADAPTERS[lang]
+                    struct = adapter.extract(tree, source)
+                    seen_ids = set()
+                    for func in struct.functions:
+                        func_id = function_id_for(file_path, func)
+                        if func_id in seen_ids:
+                            func_id = f"{func_id}@{func.line_start}"
+                        seen_ids.add(func_id)
+                        for f_info in funcs_to_populate:
+                            if f_info["id"] == func_id:
+                                f_info["_node"] = func.node
+                                f_info["_language"] = lang
+                except Exception as err:
+                    logger.warning(
+                        "Could not parse file %s for call graph resolution: %s",
+                        file_path,
+                        err,
+                    )
+    call_edges = resolve_calls(
+        all_db_funcs,
+        resolved_imports,
+        files_raw_imports,
+        class_superclasses,
+        files_exports,
+    )
+    with conn:
+        for edge in call_edges:
+            conn.execute(
+                """
+                INSERT INTO call_graph (
+                    caller_id, callee_id, callee_name, callee_file, is_ambiguous, candidates
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    edge["caller_id"],
+                    edge["callee_id"],
+                    edge["callee_name"],
+                    edge["callee_file"],
+                    edge["is_ambiguous"],
+                    edge["candidates"],
+                ),
+            )
+    for cid in all_changed_func_ids:
+        propagate_taint(conn, cid)
+    for rid, snapshot_callers in all_removed:
         propagate_taint(conn, rid, caller_snapshot=snapshot_callers)
 
     return parse_error_count, parse_error_paths, all_changed_func_ids

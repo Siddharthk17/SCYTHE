@@ -18,11 +18,16 @@ def format_folded_directory_tree(
         (f"{active_dir}/%",) if active_dir != "." else ("%",),
     ).fetchall()
 
-    direct_files = [
-        row["path"] for row in active_files
-        if "/" not in row["path"].replace(active_dir + "/", "", 1).lstrip("/")
-        or active_dir == "."
-    ]
+    if active_dir == ".":
+        # Root target: only files with no "/" are directly in the root.
+        direct_files = [row["path"] for row in active_files if "/" not in row["path"]]
+    else:
+        prefix = active_dir + "/"
+        direct_files = [
+            row["path"] for row in active_files
+            if row["path"].startswith(prefix)
+            and "/" not in row["path"][len(prefix):]
+        ]
 
     lines.append(f"{active_dir}/  \u2190 active")
     for f in sorted(direct_files):

@@ -1,7 +1,5 @@
-import hashlib
 import json
 import logging
-import os
 import queue
 import sqlite3
 import threading
@@ -9,8 +7,6 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
-
-from ctx_engine.commands.export_cmd import run_export
 
 logger = logging.getLogger("ctx")
 
@@ -106,7 +102,15 @@ class OllamaClient:
             conn = self._conn_factory()
             try:
                 self._summarize_functions(conn, file_path, function_ids)
-                run_export(conn, self._repo_root)
+                # Refresh generated docs after local summarization so
+                # CLAUDE.md never drifts behind Ollama updates. Lazy import
+                # avoids the commands/__init__ -> status -> local_llm cycle.
+                try:
+                    from ctx_engine.commands.export_cmd import run_export
+
+                    run_export(conn, self._repo_root)
+                except Exception as export_err:
+                    logger.debug("Ollama post-export skipped: %s", export_err)
             except Exception as e:
                 logger.warning(
                     "Ollama summarization failed for %s: %s", file_path, e
@@ -206,13 +210,31 @@ class OllamaClient:
 
     def _parse_response(self, text: str) -> dict | None:
         cleaned = text.strip()
+        # Strip fenced blocks: ```json ... ```, ``` ... ```, with or
+        # without a trailing newline. Small models often wrap JSON.
         if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0]
-            cleaned = cleaned.strip()
+            lines = cleaned.splitlines()
+            # Drop opening fence (``` or ```json)
+            lines = lines[1:] if len(lines) > 1 else []
+            # Drop closing fence if present
+            if lines and lines[-1].strip().startswith("```"):
+                lines = lines[:-1]
+            cleaned = "\n".join(lines).strip()
         try:
-            return json.loads(cleaned)
+            parsed = json.loads(cleaned)
         except json.JSONDecodeError:
             logger.warning(
                 "Ollama response is not valid JSON: %.100s", text
             )
             return None
+        return parsed if isinstance(parsed, dict) else None
+
+    def build_file_prompt(
+        self, file_path: str, exports: list[str], excerpt: str
+    ) -> str:
+        """Render the file-level prompt (one Ollama call per file)."""
+        return FILE_PURPOSE_PROMPT.format(
+            file_path=file_path,
+            exports=", ".join(exports),
+            excerpt=excerpt,
+        )

@@ -13,7 +13,6 @@ from ctx_engine.daemon.daemon import (
     read_watch_state,
     remove_pid_file,
 )
-from ctx_engine.daemon.local_llm import is_ollama_available, get_available_models, select_model
 from ctx_engine.mcp_server.tools.renderers import (
     render_generation_timestamp,
     latest_index_timestamp,
@@ -80,6 +79,14 @@ def _hook_status(git_dir: Path, name: str, expected_content: str) -> str:
 
 
 def _ollama_status_text(ollama_host: str) -> str:
+    # Lazy import avoids the status -> local_llm -> commands cycle when
+    # local_llm is imported first (e.g. isolated pytest of watcher).
+    from ctx_engine.daemon.local_llm import (
+        is_ollama_available,
+        get_available_models,
+        select_model,
+    )
+
     if is_ollama_available(ollama_host):
         available = get_available_models(ollama_host)
         model = select_model(available)

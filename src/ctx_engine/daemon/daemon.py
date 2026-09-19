@@ -29,9 +29,12 @@ def register_sigterm_handler(pid_path: Path) -> None:
 def daemonize(pid_path: Path | None = None) -> None:
     if os.name == "nt":
         import subprocess
+
         DETACHED_PROCESS = 0x00000008
+        # Strip --daemon so the child does not re-daemonize forever.
+        argv = [a for a in sys.argv if a != "--daemon"]
         subprocess.Popen(
-            sys.argv,
+            argv,
             creationflags=DETACHED_PROCESS,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -48,6 +51,10 @@ def daemonize(pid_path: Path | None = None) -> None:
     if os.fork() > 0:
         sys.exit(0)
     sys.stdin = open(os.devnull, "r")
+    # Detach stdout/stderr so the parent's pipe closes and `ctx watch
+    # --daemon | head` returns immediately. Daemon output goes to the log.
+    sys.stdout = open(os.devnull, "w")
+    sys.stderr = open(os.devnull, "w")
 
 
 def write_pid_file(pid_path: Path) -> None:
@@ -101,38 +108,66 @@ def write_watch_state(state_path: Path, data: dict) -> None:
 
 
 def read_watch_state(state_path: Path) -> dict:
+    defaults = {
+        "events_processed": 0,
+        "semantic_changes": 0,
+        "formatting_changes": 0,
+        "last_event": None,
+        "started_at": None,
+        "ollama_model": None,
+    }
     if not state_path.exists():
-        return {
-            "events_processed": 0,
-            "semantic_changes": 0,
-            "formatting_changes": 0,
-            "last_event": None,
-        }
+        return dict(defaults)
     try:
-        return json.loads(state_path.read_text(encoding="utf-8"))
+        data = json.loads(state_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return {
-            "events_processed": 0,
-            "semantic_changes": 0,
-            "formatting_changes": 0,
-            "last_event": None,
-        }
+        return dict(defaults)
+    for key, value in defaults.items():
+        data.setdefault(key, value)
+    return data
 
 
 def setup_watch_logging(log_path: Path, max_bytes: int = 5 * 1024 * 1024) -> None:
+    """File logging with single-backup rotation. Idempotent on re-entry.
+
+    Attaches to the ctx logger only. Watchdog's own debug stream stays at
+    WARNING so inotify events for the log file itself never feed back
+    into the log (which previously grew gigabytes in minutes).
+    """
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     if log_path.exists() and log_path.stat().st_size > max_bytes:
-        backup = log_path.with_suffix(".log.1")
-        log_path.rename(backup)
+        backup = Path(str(log_path) + ".1")
+        try:
+            if backup.exists():
+                backup.unlink()
+        except OSError:
+            pass
+        try:
+            log_path.rename(backup)
+        except OSError:
+            pass
 
-    handler = logging.FileHandler(str(log_path), encoding="utf-8")
-    handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s %(levelname)s %(message)s",
-            datefmt="%Y-%m-%dT%H:%M:%SZ",
+    ctx_logger = logging.getLogger("ctx")
+    for handler in list(ctx_logger.handlers):
+        if isinstance(handler, logging.FileHandler) and getattr(
+            handler, "baseFilename", None
+        ) == str(log_path):
+            break
+    else:
+        handler = logging.FileHandler(str(log_path), encoding="utf-8")
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)s %(message)s",
+                datefmt="%Y-%m-%dT%H:%M:%SZ",
+            )
         )
-    )
-    root_logger = logging.getLogger()
-    root_logger.addHandler(handler)
-    root_logger.setLevel(logging.DEBUG)
+        # Use UTC for the asctime so log stamps match the Z suffix.
+        handler.formatter.converter = time.gmtime  # type: ignore[attr-defined]
+        ctx_logger.addHandler(handler)
+    ctx_logger.setLevel(logging.DEBUG)
+    ctx_logger.propagate = False
+    # Silence watchdog internals; their DEBUG in-event stream caused the
+    # 3.6G feedback loop when attached to the root logger.
+    for noisy in ("watchdog", "watchdog.observers", "watchdog.observers.inotify"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)

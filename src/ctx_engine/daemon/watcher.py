@@ -13,7 +13,6 @@ from watchdog.events import (
 )
 
 from ctx_engine.daemon.daemon import write_watch_state, read_watch_state
-from ctx_engine.daemon.local_llm import OllamaClient
 from ctx_engine.db.connection import connect
 from ctx_engine.hashing import file_semantic_hash
 from ctx_engine.languages.registry import parse_file
@@ -21,6 +20,10 @@ from ctx_engine.reindex import (
     extension_to_language,
     reindex_single_file,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ctx_engine.daemon.local_llm import OllamaClient
 
 logger = logging.getLogger("ctx")
 
@@ -32,12 +35,12 @@ class CtxFileEventHandler(FileSystemEventHandler):
         repo_root: Path,
         parseable_extensions: set[str],
         debounce_seconds: float = 0.5,
-        ollama_client: OllamaClient | None = None,
+        ollama_client: "OllamaClient | None" = None,
         state_path: Path | None = None,
     ):
         self._conn_factory = conn_factory
         self._repo_root = repo_root
-        self._parseable_extensions = parseable_extensions
+        self._parseable_extensions = {e.lower() for e in parseable_extensions}
         self._debounce_seconds = debounce_seconds
         self._ollama_client = ollama_client
         self._state_path = state_path
@@ -62,6 +65,11 @@ class CtxFileEventHandler(FileSystemEventHandler):
         try:
             rel_path = str(abs_path.relative_to(self._repo_root))
         except ValueError:
+            return
+
+        # Never index the index itself. Watching .ctx/watch.log writes
+        # previously re-triggered the observer.
+        if rel_path == ".ctx" or rel_path.startswith(".ctx/"):
             return
 
         with self._pending_lock:
@@ -126,7 +134,20 @@ class CtxFileEventHandler(FileSystemEventHandler):
             self._update_watch_state("deleted", rel_path)
             return
 
-        raw_bytes = abs_path.read_bytes()
+        try:
+            raw_bytes = abs_path.read_bytes()
+        except (FileNotFoundError, PermissionError, OSError) as exc:
+            # Raced with delete or unreadable — flag stale, never crash.
+            logger.warning("Cannot read %s: %s — marking stale", rel_path, exc)
+            try:
+                conn.execute(
+                    "UPDATE files SET is_stale = 1 WHERE path = ?",
+                    (rel_path,),
+                )
+                conn.commit()
+            except Exception:
+                pass
+            return
         new_content_hash = hashlib.sha256(raw_bytes).hexdigest()
 
         existing = conn.execute(

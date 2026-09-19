@@ -13,7 +13,8 @@ def test_parse_one_file_returns_parse_result(tmp_path):
     assert result.language == "python"
     assert result.file_structure is not None
     assert len(result.function_hashes) == 1
-    assert "foo" in result.function_hashes
+    # Qualified ID so same-name methods in different classes never collide.
+    assert "test.py::foo" in result.function_hashes
     assert result.content_hash
     assert result.mtime > 0
     assert result.file_size > 0
@@ -57,7 +58,7 @@ def test_parse_one_file_is_picklable(tmp_path):
     assert restored.rel_path == "picklable.py"
     assert restored.language == "python"
     assert len(restored.function_hashes) == 1
-    assert "foo" in restored.function_hashes
+    assert "picklable.py::foo" in restored.function_hashes
     assert restored.content_hash
     assert restored.mtime > 0
     assert restored.parse_had_errors is False
@@ -70,7 +71,7 @@ def test_parse_one_file_works_in_process_pool(tmp_path):
         result = future.result(timeout=10)
     assert isinstance(result, ParseResult)
     assert result.rel_path == "pooltest.py"
-    assert "bar" in result.function_hashes
+    assert "pooltest.py::bar" in result.function_hashes
 
 
 def test_worker_count_default():

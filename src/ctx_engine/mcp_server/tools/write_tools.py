@@ -10,7 +10,30 @@ from ctx_engine.hashing import gen_id
 logger = logging.getLogger("ctx")
 
 
-def handle_add_danger(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
+def _normalize_call(
+    repo_root: Path | dict | None,
+    arguments: dict | None,
+) -> tuple[Path, dict]:
+    """Support both handle_x(conn, repo_root, args) and handle_x(conn, args).
+
+    The Week 4 acceptance script calls handlers with two args
+    (conn, arguments); the server and tests use three args. Accept both.
+    """
+    if arguments is None and isinstance(repo_root, dict):
+        return Path("."), repo_root
+    if arguments is None:
+        arguments = {}
+    if repo_root is None or isinstance(repo_root, dict):
+        return Path("."), arguments
+    return Path(repo_root), arguments
+
+
+def handle_add_danger(
+    conn: sqlite3.Connection,
+    repo_root: Path | dict | None,
+    arguments: dict | None = None,
+) -> str:
+    repo_root, arguments = _normalize_call(repo_root, arguments)
     scope = arguments.get("scope", "*")
     description = arguments.get("description", "")
     reason = arguments.get("reason", "")
@@ -29,7 +52,12 @@ def handle_add_danger(conn: sqlite3.Connection, repo_root: Path, arguments: dict
     return f"Danger zone added: {danger_id}"
 
 
-def handle_remove_danger(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
+def handle_remove_danger(
+    conn: sqlite3.Connection,
+    repo_root: Path | dict | None,
+    arguments: dict | None = None,
+) -> str:
+    repo_root, arguments = _normalize_call(repo_root, arguments)
     danger_id = arguments.get("id", "")
     if not danger_id:
         return "Error: 'id' argument is required."
@@ -49,7 +77,12 @@ def handle_remove_danger(conn: sqlite3.Connection, repo_root: Path, arguments: d
     return f"Danger zone removed: {danger_id}"
 
 
-def handle_add_decision(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
+def handle_add_decision(
+    conn: sqlite3.Connection,
+    repo_root: Path | dict | None,
+    arguments: dict | None = None,
+) -> str:
+    repo_root, arguments = _normalize_call(repo_root, arguments)
     scope = arguments.get("scope", "*")
     decision = arguments.get("decision", "")
     alternatives = arguments.get("alternatives", "")
@@ -69,7 +102,12 @@ def handle_add_decision(conn: sqlite3.Connection, repo_root: Path, arguments: di
     return f"Decision recorded: {decision_id}"
 
 
-def handle_log_session(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
+def handle_log_session(
+    conn: sqlite3.Connection,
+    repo_root: Path | dict | None,
+    arguments: dict | None = None,
+) -> str:
+    repo_root, arguments = _normalize_call(repo_root, arguments)
     entry = arguments.get("entry", "")
     files_touched_raw = arguments.get("files_touched", "")
     files_touched = ", ".join(files_touched_raw) if isinstance(files_touched_raw, list) else str(files_touched_raw)
@@ -92,7 +130,12 @@ def handle_log_session(conn: sqlite3.Connection, repo_root: Path, arguments: dic
     return f"Session log updated ({count} entries total)"
 
 
-def handle_log_change(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
+def handle_log_change(
+    conn: sqlite3.Connection,
+    repo_root: Path | dict | None,
+    arguments: dict | None = None,
+) -> str:
+    repo_root, arguments = _normalize_call(repo_root, arguments)
     file_path = arguments.get("file", "")
     summary = arguments.get("summary", "")
 
@@ -108,16 +151,21 @@ def handle_log_change(conn: sqlite3.Connection, repo_root: Path, arguments: dict
         (file_path, uuid.uuid4().hex[:12], summary, now),
     )
     conn.execute(
-        "DELETE FROM changes WHERE id NOT IN ("
+        "DELETE FROM changes WHERE file = ? AND id NOT IN ("
         "SELECT id FROM changes WHERE file = ? ORDER BY timestamp DESC LIMIT 20"
         ")",
-        (file_path,),
+        (file_path, file_path),
     )
     conn.commit()
     return f"Change logged for {file_path}"
 
 
-def handle_mark_tainted(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
+def handle_mark_tainted(
+    conn: sqlite3.Connection,
+    repo_root: Path | dict | None,
+    arguments: dict | None = None,
+) -> str:
+    repo_root, arguments = _normalize_call(repo_root, arguments)
     function_id = arguments.get("function_id", "")
     taint_source = arguments.get("taint_source", "")
 
@@ -147,7 +195,12 @@ def handle_mark_tainted(conn: sqlite3.Connection, repo_root: Path, arguments: di
     return f"Marked {function_id} as tainted (source: {taint_source}). Use ctx.clear_taint after review."
 
 
-def handle_clear_taint(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
+def handle_clear_taint(
+    conn: sqlite3.Connection,
+    repo_root: Path | dict | None,
+    arguments: dict | None = None,
+) -> str:
+    repo_root, arguments = _normalize_call(repo_root, arguments)
     function_id = arguments.get("function_id", "")
 
     if not function_id:
@@ -173,7 +226,12 @@ def handle_clear_taint(conn: sqlite3.Connection, repo_root: Path, arguments: dic
     return f"Cleared taint on {function_id}."
 
 
-def handle_update_summary(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
+def handle_update_summary(
+    conn: sqlite3.Connection,
+    repo_root: Path | dict | None,
+    arguments: dict | None = None,
+) -> str:
+    repo_root, arguments = _normalize_call(repo_root, arguments)
     target_type = arguments.get("type", "file")
     target_id = arguments.get("id", "")
     summary = arguments.get("summary", "")
@@ -219,7 +277,12 @@ def handle_update_summary(conn: sqlite3.Connection, repo_root: Path, arguments: 
         return f"Updated summary for file {target_id}."
 
 
-def handle_update_file(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
+def handle_update_file(
+    conn: sqlite3.Connection,
+    repo_root: Path | dict | None,
+    arguments: dict | None = None,
+) -> str:
+    repo_root, arguments = _normalize_call(repo_root, arguments)
     file_path = arguments.get("file", "")
     if not file_path:
         return "Error: 'file' argument is required."
@@ -254,7 +317,12 @@ def handle_update_file(conn: sqlite3.Connection, repo_root: Path, arguments: dic
     return f"Updated file record: {file_path}"
 
 
-def handle_update_function(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
+def handle_update_function(
+    conn: sqlite3.Connection,
+    repo_root: Path | dict | None,
+    arguments: dict | None = None,
+) -> str:
+    repo_root, arguments = _normalize_call(repo_root, arguments)
     func_id = arguments.get("id", "")
     if not func_id:
         return "Error: 'id' argument is required."
@@ -294,7 +362,12 @@ def handle_update_function(conn: sqlite3.Connection, repo_root: Path, arguments:
     return f"Updated function record: {func_id} (taint cleared)"
 
 
-def handle_plan(conn: sqlite3.Connection, repo_root: Path, arguments: dict) -> str:
+def handle_plan(
+    conn: sqlite3.Connection,
+    repo_root: Path | dict | None,
+    arguments: dict | None = None,
+) -> str:
+    repo_root, arguments = _normalize_call(repo_root, arguments)
     plan_text = arguments.get("plan", "")
     files_touched_raw = arguments.get("files_touched", "")
     files_touched = ", ".join(files_touched_raw) if isinstance(files_touched_raw, list) else str(files_touched_raw)
