@@ -8,7 +8,7 @@ from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent, CallToolResult, ServerCapabilities, ToolsCapability
 
-from ctx_engine.db.connection import connect
+from ctx_engine.db.connection import get_pooled_connection
 from ctx_engine.mcp_server.tools.read_tools import (
     handle_get_context,
     handle_get_function,
@@ -464,12 +464,24 @@ def create_server(
                 isError=True,
             )
 
-        # One SQLite connection per tool call (WAL mode: readers never block).
-        # sqlite3 connections are not thread-safe when shared across async
-        # handlers; per-call connections cost <1ms and avoid all races.
-        conn = connect(db_path)
+        # Week 7 hardening: thread-local pooled connection (WAL mode: readers
+        # never block). MCP tool calls are sequential in the current
+        # implementation, so the pool effectively holds one reused connection
+        # for the session lifetime, avoiding per-call connect overhead.
+        # sqlite3 connections are not shared across threads — the pool is
+        # thread-local, one connection per request-handler thread.
+        # Write tools commit explicitly inside their handlers; commit again
+        # here defensively so a pooled connection never holds an open write
+        # transaction into the next read. Never close here — lifetime is the
+        # thread (close via close_pooled_connection on shutdown).
+        conn = get_pooled_connection(db_path)
         try:
             result_text = dispatch_tool(name, arguments, conn, repo_root)
+            if name in WRITE_TOOL_NAMES:
+                try:
+                    conn.commit()
+                except Exception:
+                    pass
             return CallToolResult(content=[TextContent(type="text", text=result_text)])
         except Exception as err:
             if name in WRITE_TOOL_NAMES:
@@ -479,11 +491,6 @@ def create_server(
                 content=[TextContent(type="text", text=f"Error executing {name}: {err}")],
                 isError=True,
             )
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
     return app
 

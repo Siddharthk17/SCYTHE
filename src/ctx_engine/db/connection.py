@@ -46,15 +46,14 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
 # ── Connection pool ────────────────────────────────────────────────────────────
 #
-# The MCP server opens a connection per tool call. For a busy session where many
-# sequential MCP calls are made, the per-call connect overhead adds up. A simple
-# thread-local pool keeps one connection alive per thread for the lifetime of
-# the MCP request handler. This is safe because MCP tool calls are sequential
-# within a session — the pool degenerates to "one connection per request thread",
-# which is exactly what we want.
+# Week 7 hardening: the MCP server reuses one SQLite connection per thread via
+# get_pooled_connection(). For a busy session with hundreds of sequential MCP
+# calls, this avoids per-call connect overhead. Thread-local storage keeps this
+# safe (sqlite3 handles are not shared across threads); sequential dispatch in
+# the current server means one live connection per session thread.
 #
 # For ctx init / sync / other CLI commands, connect() is still used directly —
-# the pool is opt-in via get_pooled_connection() and used only by the MCP server.
+# the pool is opt-in via get_pooled_connection() and used by the MCP server.
 
 _thread_local = threading.local()
 
@@ -65,11 +64,39 @@ def get_pooled_connection(db_path: Path) -> sqlite3.Connection:
     The connection lives for the lifetime of the calling thread. Callers that
     write must commit explicitly; WAL mode allows concurrent reads from other
     processes (e.g. ctx sync running while the MCP server is active).
+
+    Production-grade behavior:
+    - Tracks the resolved db path per thread. If a different path is
+      requested (e.g. tests using tmp_path fixtures in one thread), the old
+      connection is closed and a new one is opened. The naive version
+      returned the wrong DB in that case.
+    - Validates liveness with SELECT 1; a closed/broken handle triggers
+      transparent reconnect instead of ProgrammingError.
     """
+    resolved = str(Path(db_path))
     conn = getattr(_thread_local, "conn", None)
-    if conn is None:
-        conn = connect(db_path)
-        _thread_local.conn = conn
+    pooled_path = getattr(_thread_local, "db_path", None)
+    if conn is not None and pooled_path != resolved:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        conn = None
+        _thread_local.conn = None
+        _thread_local.db_path = None
+    if conn is not None:
+        try:
+            conn.execute("SELECT 1").fetchone()
+            return conn
+        except (sqlite3.ProgrammingError, sqlite3.OperationalError):
+            try:
+                conn.close()
+            except Exception:
+                pass
+            conn = None
+    conn = connect(Path(resolved))
+    _thread_local.conn = conn
+    _thread_local.db_path = resolved
     return conn
 
 
@@ -82,3 +109,7 @@ def close_pooled_connection() -> None:
         except Exception:
             pass
         _thread_local.conn = None
+    try:
+        _thread_local.db_path = None
+    except Exception:
+        pass
