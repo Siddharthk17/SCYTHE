@@ -110,7 +110,7 @@ class OllamaClient:
 
                     run_export(conn, self._repo_root)
                 except Exception as export_err:
-                    logger.debug("Ollama post-export skipped: %s", export_err)
+                    logger.warning("Ollama post-export failed (watcher continues): %s", export_err)
             except Exception as e:
                 logger.warning(
                     "Ollama summarization failed for %s: %s", file_path, e

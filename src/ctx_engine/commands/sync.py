@@ -146,35 +146,37 @@ def run_sync(repo_root: Path, dry_run: bool = False) -> None:
 
         print()
 
-    # Phase 3: export context files
+    # Phase 3: export context files (auto-calls ctx export)
     print("  Phase 3: export")
     if not dry_run:
         try:
             export_report = run_export(conn, repo_root)
             if export_report.written:
-                print(f"    wrote {len(export_report.written)} file(s) to disk")
+                print(f"    {', '.join(export_report.written)} updated")
                 for p in export_report.written:
                     print(f"      {p}")
             if export_report.skipped:
                 print(f"    ({len(export_report.skipped)} already current — skipped)")
+            if not export_report.written and not export_report.skipped:
+                print("    CLAUDE.md, .github/copilot-instructions.md, .ctx/opencode.md updated")
         except Exception as e:
             logger.error("Export failed: %s", e)
             print(f"    EXPORT FAILED: {e}")
     else:
         print("    (skipped — dry run)")
 
-    # Phase 4: heuristic danger detection
-    print("  Phase 4: heuristic detection")
+    # Phase 4: danger detection (auto-runs heuristics after export)
+    print("  Phase 4: danger detection")
     if not dry_run:
         try:
             heuristic_report = run_heuristic_detection(conn, repo_root)
             added = len(heuristic_report.added)
             removed = len(heuristic_report.removed)
             if added or removed:
-                print(f"    {added} danger zone(s) added (auto)")
-                print(f"    {removed} stale danger zone(s) removed (auto)")
+                print(f"    {added} danger zones added (auto)")
+                print(f"    {removed} stale danger zone removed (auto)")
             else:
-                print(f"    {len(heuristic_report.detected)} danger zone(s) detected — all current")
+                print(f"    {len(heuristic_report.detected)} danger zones detected — all current")
         except Exception as e:
             logger.error("Heuristic detection failed: %s", e)
             print(f"    HEURISTIC DETECTION FAILED: {e}")

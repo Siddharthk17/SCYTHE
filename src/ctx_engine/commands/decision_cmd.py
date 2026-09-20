@@ -49,7 +49,7 @@ def decision_remove(conn, decision_id: str, confirmed: bool = False) -> str:
 
     conn.execute("DELETE FROM decisions WHERE id = ?", (decision_id,))
     conn.commit()
-    return f"Removed: {row['decision']}"
+    return f"Removed decision: {decision_id}\nWas: \"{row['decision']}\""
 
 
 def decision_list(conn, scope: str | None = None) -> list[dict]:

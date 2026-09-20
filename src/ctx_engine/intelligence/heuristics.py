@@ -122,20 +122,27 @@ def detect_global_mutations(conn) -> list[DangerRecord]:
     return dangers
 
 
-def detect_invariant_comments(conn, repo_root: Path) -> list[DangerRecord]:
+def detect_invariant_comments(conn, repo_root: Path | None = None) -> list[DangerRecord]:
+    """Re-parse source files to find functions with invariant-like comments.
+
+    Only runs on files where the source is accessible on disk.
+    Only considers comments INSIDE function bodies (not module-level comments).
+    repo_root defaults to cwd for spec-compatible single-arg calls.
+    """
+    root = repo_root if repo_root is not None else Path(".")
     fn_rows = conn.execute(
         "SELECT id, file, line_start, line_end FROM functions"
     ).fetchall()
 
-    by_file = defaultdict(list)
+    by_file: dict[str, list] = defaultdict(list)
     for row in fn_rows:
         by_file[row["file"]].append(row)
 
-    dangers = []
+    dangers: list[DangerRecord] = []
     for file_path, fns in by_file.items():
         try:
-            lines = (repo_root / file_path).read_text(encoding="utf-8").splitlines()
-        except (IOError, UnicodeDecodeError):
+            lines = (root / file_path).read_text(encoding="utf-8").splitlines()
+        except (IOError, UnicodeDecodeError, TypeError):
             continue
 
         for fn_row in fns:
@@ -172,15 +179,21 @@ def detect_invariant_comments(conn, repo_root: Path) -> list[DangerRecord]:
 
 def run_heuristic_detection(
     conn,
-    repo_root: Path,
+    repo_root: Path | None = None,
     dry_run: bool = False,
 ) -> HeuristicReport:
+    """Run all four heuristics, upserting added_by='auto' records.
+
+    Replace pattern: stale auto-detections are deleted so the table
+    always reflects current code. Human/model records are never touched.
+    """
+    root = repo_root if repo_root is not None else Path(".")
     all_dangers: list[DangerRecord] = []
 
     all_dangers.extend(detect_high_call_fanin(conn))
     all_dangers.extend(detect_high_import_fanin(conn))
     all_dangers.extend(detect_global_mutations(conn))
-    all_dangers.extend(detect_invariant_comments(conn, repo_root))
+    all_dangers.extend(detect_invariant_comments(conn, root))
 
     if dry_run:
         existing_auto = set(

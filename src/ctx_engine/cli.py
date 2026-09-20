@@ -263,11 +263,11 @@ def watch_status_cmd(ctx: click.Context) -> None:
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
     help="Path to the repository root directory.",
 )
-@click.option("--claude", "targets", flag_value="claude", help="Only generate CLAUDE.md.")
-@click.option("--copilot", "targets", flag_value="copilot", help="Only generate copilot-instructions.md.")
-@click.option("--opencode", "targets", flag_value="opencode", help="Only generate .ctx/opencode.md.")
-@click.option("--all", "all_targets", is_flag=True, default=True, help="Generate all output files (default).")
-def export_cmd(repo_root: Path, targets: str | None, all_targets: bool) -> None:
+@click.option("--claude", is_flag=True, default=False, help="Only generate CLAUDE.md.")
+@click.option("--copilot", is_flag=True, default=False, help="Only generate copilot-instructions.md.")
+@click.option("--opencode", is_flag=True, default=False, help="Only generate .ctx/opencode.md.")
+@click.option("--all", "all_targets", is_flag=True, default=False, help="Generate all output files (default).")
+def export_cmd(repo_root: Path, claude: bool, copilot: bool, opencode: bool, all_targets: bool) -> None:
     """Generate output context files (CLAUDE.md, copilot-instructions.md, opencode.md)."""
     from ctx_engine.db import connect
     from ctx_engine.commands.export_cmd import run_export
@@ -280,12 +280,17 @@ def export_cmd(repo_root: Path, targets: str | None, all_targets: bool) -> None:
     conn = connect(db_path)
     conn.row_factory = __import__("sqlite3").Row
 
-    if all_targets and targets is None:
+    selected: set[str] = set()
+    if claude:
+        selected.add("claude")
+    if copilot:
+        selected.add("copilot")
+    if opencode:
+        selected.add("opencode")
+    if all_targets or not selected:
         target_set = {"claude", "copilot", "opencode"}
-    elif targets:
-        target_set = {targets}
     else:
-        target_set = {"claude", "copilot", "opencode"}
+        target_set = selected
 
     try:
         report = run_export(conn, repo_root.resolve(), targets=target_set)
@@ -442,15 +447,30 @@ def danger_detect_cmd(repo_root: Path, dry_run: bool) -> None:
     finally:
         conn.close()
 
+    def _heuristic_tag(d) -> str:
+        desc = d.description or ""
+        if desc.startswith("High-frequency function"):
+            return "call fan-in"
+        if desc.startswith("High-frequency module"):
+            return "import fan-in"
+        if desc.startswith("Mutates global state"):
+            return "global mutation"
+        if desc.startswith("Invariant comment"):
+            return "invariant comment"
+        return "auto"
+
     if dry_run:
         click.echo("ctx danger detect --dry-run")
         click.echo()
-        click.echo(f"  Would add {len(result['added'])} new danger zones (auto-detected):")
-        click.echo(f"  Total detected on current code: {len(result['detected'])}")
+        click.echo(f"  Would add {len(result['added'])} danger zones (auto-detected):")
         click.echo()
-        for d in result["detected"]:
-            click.echo(f"  [{d.scope}]")
-            click.echo(f"    \"{d.description}\"")
+        for d in result["detected"][:10]:
+            click.echo(f"  [{d.scope}] ({_heuristic_tag(d)})")
+            short = d.description[:80] + ("..." if len(d.description) > 80 else "")
+            click.echo(f'    "{short}"')
+            click.echo()
+        if len(result["detected"]) > 10:
+            click.echo(f"  ... ({len(result['detected']) - 10} more)")
             click.echo()
         click.echo(f"  Would remove {len(result['removed'])} stale auto-detections.")
         click.echo()

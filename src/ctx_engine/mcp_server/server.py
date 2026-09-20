@@ -330,6 +330,33 @@ WRITE_TOOL_NAMES.update(
      "ctx_update_function"})
 
 
+def _tool_schema(tool: Tool) -> dict:
+    """Return the JSON schema regardless of MCP SDK spelling.
+
+    SDK 1.28 uses ``inputSchema`` (camelCase); newer releases renamed it
+    to ``input_schema`` (snake_case). Support both so fresh-venv installs
+    never crash at import time.
+    """
+    schema = getattr(tool, "inputSchema", None)
+    if schema is None:
+        schema = getattr(tool, "input_schema", None)
+    if schema is None:
+        try:
+            dump = tool.model_dump(by_alias=True)
+            schema = dump.get("inputSchema") or dump.get("input_schema") or {}
+        except Exception:
+            schema = {}
+    return schema or {}
+
+
+def _make_alias_tool(name: str, description: str, schema: dict) -> Tool:
+    """Construct a Tool with whichever schema kwarg the installed SDK accepts."""
+    fields = getattr(Tool, "model_fields", {}) or {}
+    if "inputSchema" in fields:
+        return Tool(name=name, description=description, inputSchema=schema)
+    return Tool(name=name, description=description, input_schema=schema)
+
+
 def _alias_tool_entries() -> list[Tool]:
     """Build Tool entries for ctx_ aliases mirroring the canonical schemas."""
     by_name = {t.name: t for t in TOOLS}
@@ -340,10 +367,10 @@ def _alias_tool_entries() -> list[Tool]:
             continue
         if any(t.name == alias for t in TOOLS):
             continue
-        entries.append(Tool(
+        entries.append(_make_alias_tool(
             name=alias,
             description=base.description + f" (alias of {canonical})",
-            inputSchema=base.inputSchema,
+            schema=_tool_schema(base),
         ))
     return entries
 

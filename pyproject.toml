@@ -37,7 +37,7 @@ dependencies = [
     "tree-sitter-ruby>=0.23",
     "click>=8.1",
     "anthropic>=0.40",
-    "mcp>=1.0",
+    "mcp>=1.0,<1.29",
     "watchdog>=4.0",
 ]
 

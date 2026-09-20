@@ -42,7 +42,7 @@ def danger_remove(conn, danger_id: str, confirmed: bool = False) -> str:
 
     conn.execute("DELETE FROM dangers WHERE id = ?", (danger_id,))
     conn.commit()
-    return f"Removed: {row['description']}"
+    return f"Removed danger zone: {danger_id}\nWas: \"{row['description']}\""
 
 
 def danger_list(conn, scope: str | None = None) -> list[dict]:
@@ -65,7 +65,12 @@ def danger_list(conn, scope: str | None = None) -> list[dict]:
     return list(rows)
 
 
-def danger_detect(conn, repo_root, dry_run: bool = False) -> dict:
+def danger_detect(conn, repo_root=None, dry_run: bool = False) -> dict:
+    """Auto-detect danger zones via static-analysis heuristics.
+
+    Human/model records are never touched — only added_by='auto' rows
+    are managed via snapshot replacement.
+    """
     report = run_heuristic_detection(conn, repo_root, dry_run=dry_run)
     return {
         "detected": report.detected,

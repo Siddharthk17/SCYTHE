@@ -74,9 +74,20 @@ def run_export(
     # One generation timestamp per export pass keeps all three files in lockstep
     # and makes re-runs byte-idempotent: nothing is rewritten unless the database
     # changed after the file's stored generation time.
-    gen_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # File timestamps are second-precision while DB carries microseconds, so
+    # ceiling the generation time to DB+1s. This guarantees a file written in
+    # the same sync pass is never flagged OUTDATED by second-truncation.
+    from datetime import timedelta as _td2
+    now_dt = datetime.now(timezone.utc)
     db_latest = latest_index_timestamp(conn)
     db_dt = _parse_ts(db_latest) if db_latest else None
+    if db_dt is not None and db_dt.tzinfo is None:
+        db_dt = db_dt.replace(tzinfo=timezone.utc)
+    if db_dt is not None and db_dt + _td2(seconds=1) > now_dt:
+        gen_dt = db_dt + _td2(seconds=1)
+    else:
+        gen_dt = now_dt
+    gen_ts = gen_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     written = []
     skipped = []

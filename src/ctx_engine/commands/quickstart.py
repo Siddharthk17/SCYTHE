@@ -13,7 +13,7 @@ def run_quickstart(repo_root: Path) -> None:
     )
 
     if not is_git_repo:
-        subtitle += "  (note: this directory is not a git repo -- run 'git init' first)"
+        subtitle += "  (note: this directory is not a git repo — run 'git init' first)"
 
     width = max(len(header), len(subtitle)) + 4
     border = "  " + "─" * (width - 2)

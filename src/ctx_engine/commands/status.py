@@ -125,7 +125,11 @@ def _export_freshness(repo_root: Path, conn) -> dict[str, str]:
             except (ValueError, TypeError):
                 statuses[file_path] = "?"
                 continue
-            if gen_dt >= db_dt:
+            # File timestamps are second-precision (2026-06-14T14:05:14Z) while
+            # DB timestamps carry microseconds. Allow 5s tolerance so a file
+            # written in the same sync pass is not flagged OUTDATED.
+            from datetime import timedelta
+            if gen_dt + timedelta(seconds=5) >= db_dt:
                 statuses[file_path] = "CURRENT"
             else:
                 statuses[file_path] = "OUTDATED"
