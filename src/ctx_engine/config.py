@@ -186,18 +186,45 @@ def _format_toml_value(value) -> str:
 
 
 def write_toml(config: dict, path: Path) -> None:
-    """Write a two-level config dict as TOML. No external dependency."""
+    """Write a two-level config dict as TOML. No external dependency.
+
+    Nested tables beyond two levels (e.g. ``[costs.pricing.<model>]``)
+    are preserved as ``[section.subsection]`` blocks so custom pricing
+    is never silently dropped by ``ctx config set/reset``.
+    """
     lines: list[str] = []
     for section, values in sorted(config.items()):
         if not isinstance(values, dict):
             continue
         scalar_items = {k: v for k, v in values.items() if not isinstance(v, dict)}
-        if not scalar_items:
-            continue
-        lines.append(f"[{section}]")
-        for key, value in sorted(scalar_items.items()):
-            lines.append(f"{key} = {_format_toml_value(value)}")
-        lines.append("")
+        nested_items = {k: v for k, v in values.items() if isinstance(v, dict)}
+        if scalar_items:
+            lines.append(f"[{section}]")
+            for key, value in sorted(scalar_items.items()):
+                lines.append(f"{key} = {_format_toml_value(value)}")
+            lines.append("")
+        for sub, subvals in sorted(nested_items.items()):
+            if not isinstance(subvals, dict) or not subvals:
+                continue
+            # Only one extra level is supported (e.g. costs.pricing.<model>
+            # stores per-model dicts of scalars).
+            if all(isinstance(v, dict) for v in subvals.values()):
+                for model, pricing in sorted(subvals.items()):
+                    if not isinstance(pricing, dict):
+                        continue
+                    lines.append(f"[{section}.{sub}.{model}]")
+                    for key, value in sorted(pricing.items()):
+                        if isinstance(value, dict):
+                            continue
+                        lines.append(f"{key} = {_format_toml_value(value)}")
+                    lines.append("")
+            else:
+                lines.append(f"[{section}.{sub}]")
+                for key, value in sorted(subvals.items()):
+                    if isinstance(value, dict):
+                        continue
+                    lines.append(f"{key} = {_format_toml_value(value)}")
+                lines.append("")
     Path(path).write_text("\n".join(lines), encoding="utf-8")
 
 

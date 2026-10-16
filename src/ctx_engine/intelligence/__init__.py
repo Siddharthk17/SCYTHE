@@ -1,6 +1,6 @@
 """Intelligence layer — confidence decay, taint propagation, and LLM-driven summarization."""
 
-from ctx_engine.intelligence.confidence import decay, CONFIDENCE_DECAY_FACTOR, LOW_CONFIDENCE_THRESHOLD, LIKELY_STALE_THRESHOLD
+from ctx_engine.intelligence.confidence import decay, CONFIDENCE_DECAY_FACTOR, LOW_CONFIDENCE_THRESHOLD, LIKELY_STALE_THRESHOLD, get_thresholds, is_low_confidence, is_likely_stale
 from ctx_engine.intelligence.taint import propagate_taint
 from ctx_engine.intelligence.llm_client import (
     get_anthropic_client,
@@ -17,6 +17,9 @@ __all__ = [
     "CONFIDENCE_DECAY_FACTOR",
     "LOW_CONFIDENCE_THRESHOLD",
     "LIKELY_STALE_THRESHOLD",
+    "get_thresholds",
+    "is_low_confidence",
+    "is_likely_stale",
     "propagate_taint",
     "get_anthropic_client",
     "get_model_name",

@@ -43,6 +43,13 @@ def _pct(part: int, total: int) -> float:
 
 def collect_metrics(conn: sqlite3.Connection, repo_root: Path) -> dict:
     """Gather all raw metrics. Returns a dict matching the documented JSON keys."""
+    # Confidence cutoffs are config-aware (additive: defaults match constants).
+    try:
+        from ctx_engine.intelligence.confidence import get_thresholds as _get_thresholds
+
+        _low_thr, _stale_thr = _get_thresholds(repo_root)
+    except Exception:
+        _low_thr, _stale_thr = 0.5, 0.2
     # ── Summary quality ──
     total_functions = conn.execute("SELECT COUNT(*) FROM functions").fetchone()[0]
     null_summary = conn.execute(
@@ -52,10 +59,10 @@ def collect_metrics(conn: sqlite3.Connection, repo_root: Path) -> dict:
         "SELECT COUNT(*) FROM functions WHERE confidence >= 0.9"
     ).fetchone()[0]
     low_confidence = conn.execute(
-        "SELECT COUNT(*) FROM functions WHERE confidence < 0.5"
+        "SELECT COUNT(*) FROM functions WHERE confidence < ?", (_low_thr,)
     ).fetchone()[0]
     likely_stale = conn.execute(
-        "SELECT COUNT(*) FROM functions WHERE confidence < 0.2"
+        "SELECT COUNT(*) FROM functions WHERE confidence < ?", (_stale_thr,)
     ).fetchone()[0]
 
     # ── Call graph resolution ──

@@ -278,9 +278,22 @@ def run_status(repo_root: Path, full: bool = False) -> None:
         fts_available = False
 
     fresh = conn.execute("SELECT count(*) FROM functions WHERE confidence >= 1.0;").fetchone()[0]
-    decayed_once = conn.execute("SELECT count(*) FROM functions WHERE confidence >= 0.5 AND confidence < 1.0;").fetchone()[0]
-    low_confidence = conn.execute("SELECT count(*) FROM functions WHERE confidence >= 0.2 AND confidence < 0.5;").fetchone()[0]
-    likely_stale = conn.execute("SELECT count(*) FROM functions WHERE confidence < 0.2;").fetchone()[0]
+    try:
+        from ctx_engine.intelligence.confidence import get_thresholds as _get_thresholds
+
+        _low_thr, _stale_thr = _get_thresholds(repo_root)
+    except Exception:
+        _low_thr, _stale_thr = 0.5, 0.2
+    decayed_once = conn.execute(
+        "SELECT count(*) FROM functions WHERE confidence >= ? AND confidence < 1.0;", (_low_thr,)
+    ).fetchone()[0]
+    low_confidence = conn.execute(
+        "SELECT count(*) FROM functions WHERE confidence >= ? AND confidence < ?;",
+        (_stale_thr, _low_thr),
+    ).fetchone()[0]
+    likely_stale = conn.execute(
+        "SELECT count(*) FROM functions WHERE confidence < ?;", (_stale_thr,)
+    ).fetchone()[0]
 
     stale_functions_count = conn.execute("SELECT count(*) FROM functions WHERE is_stale = 1;").fetchone()[0]
     stale_files_count = conn.execute("SELECT count(*) FROM files WHERE is_stale = 1;").fetchone()[0]

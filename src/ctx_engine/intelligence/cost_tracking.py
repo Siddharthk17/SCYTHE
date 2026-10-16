@@ -164,7 +164,7 @@ def check_budget_warning(repo_root: Path) -> str | None:
         return None
     month_total = _sum_costs_since(repo_root, _start_of_current_month())
     if month_total >= budget_value:
-        return f"Monthly budget exceeded: ${month_total:.4f} of ${budget_value:.2f} spent (estimated)."
+        return f"⚠ Monthly budget exceeded: ${month_total:.4f} of ${budget_value:.2f} spent (estimated)."
     return None
 
 

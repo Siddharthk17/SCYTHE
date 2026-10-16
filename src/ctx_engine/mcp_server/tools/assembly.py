@@ -3,24 +3,46 @@ import logging
 import sqlite3
 from pathlib import Path, PurePosixPath
 
-from ctx_engine.intelligence.confidence import LOW_CONFIDENCE_THRESHOLD, LIKELY_STALE_THRESHOLD
+from ctx_engine.intelligence.confidence import (
+    LOW_CONFIDENCE_THRESHOLD,
+    LIKELY_STALE_THRESHOLD,
+    get_thresholds,
+)
 from ctx_engine.mcp_server.tools.centrality import compute_centrality
 from ctx_engine.mcp_server.tools.folding import format_folded_directory_tree
 
 logger = logging.getLogger("ctx.assembly")
 
 
-def get_confidence_tag(confidence: float, is_stale: int) -> str:
+def get_confidence_tag(
+    confidence: float,
+    is_stale: int,
+    repo_root: Path | None = None,
+    low_threshold: float | None = None,
+    stale_threshold: float | None = None,
+) -> str:
     if is_stale:
         return "[STALE - run 'ctx update <file>' to refresh]"
-    if confidence < LIKELY_STALE_THRESHOLD:
+    if low_threshold is None or stale_threshold is None:
+        if repo_root is not None:
+            cfg_low, cfg_stale = get_thresholds(repo_root)
+            if low_threshold is None:
+                low_threshold = cfg_low
+            if stale_threshold is None:
+                stale_threshold = cfg_stale
+        else:
+            if low_threshold is None:
+                low_threshold = LOW_CONFIDENCE_THRESHOLD
+            if stale_threshold is None:
+                stale_threshold = LIKELY_STALE_THRESHOLD
+    if confidence < stale_threshold:
         return "[LIKELY STALE - metadata may not reflect current code]"
-    if confidence < LOW_CONFIDENCE_THRESHOLD:
+    if confidence < low_threshold:
         return "[LOW CONFIDENCE - code has changed since last summary]"
     return ""
 
 
-def format_file_header(row: sqlite3.Row, long: bool = True) -> str:
+def format_file_header(row: sqlite3.Row, long: bool = True, repo_root: Path | None = None) -> str:
     lines = [f"FILE: {row['path']}"]
     if row["system"]:
         lines.append(f"SYSTEM: {row['system']}")
@@ -42,13 +64,13 @@ def format_file_header(row: sqlite3.Row, long: bool = True) -> str:
         lines.append(f"DANGER: {row['danger']}")
     if row["last_change"]:
         lines.append(f"LAST CHANGE: {row['last_change']}")
-    confidence_tag = get_confidence_tag(row["confidence"], row["is_stale"])
+    confidence_tag = get_confidence_tag(row["confidence"], row["is_stale"], repo_root=repo_root)
     if confidence_tag:
         lines.append(confidence_tag)
     return "\n".join(lines)
 
 
-def format_function_record(row: sqlite3.Row, long: bool = True) -> str:
+def format_function_record(row: sqlite3.Row, long: bool = True, repo_root: Path | None = None) -> str:
     lines = [f"FUNC: {row['id']}"]
     lines.append(f"SIG: {row['signature']}")
     if long and row["summary_long"]:
@@ -62,7 +84,7 @@ def format_function_record(row: sqlite3.Row, long: bool = True) -> str:
     if row["danger"]:
         lines.append(f"DANGER: {row['danger']}")
     tags = []
-    ct = get_confidence_tag(row["confidence"], row["is_stale"])
+    ct = get_confidence_tag(row["confidence"], row["is_stale"], repo_root=repo_root)
     if ct:
         tags.append(ct)
     if row["is_tainted"]:
@@ -185,6 +207,7 @@ def assemble_zone0(
     target_file: str,
     target_line: int | None,
     long_summaries: bool = True,
+    repo_root: Path | None = None,
 ) -> str:
     parts = []
 
@@ -199,7 +222,7 @@ def assemble_zone0(
             "or 'ctx init' to index the entire repo."
         )
 
-    parts.append(format_file_header(file_row))
+    parts.append(format_file_header(file_row, repo_root=repo_root))
 
     all_functions = conn.execute(
         "SELECT * FROM functions WHERE file = ? ORDER BY line_start",
@@ -217,7 +240,7 @@ def assemble_zone0(
         pagination_note = None
 
     for fn in functions:
-        parts.append(format_function_record(fn, long=long_summaries))
+        parts.append(format_function_record(fn, long=long_summaries, repo_root=repo_root))
 
     if pagination_note:
         parts.append(pagination_note)
@@ -246,6 +269,7 @@ def assemble_zone1(
     target_file: str,
     centrality_scores: dict[str, float],
     long_mode: bool = True,
+    repo_root: Path | None = None,
 ) -> str:
     parts = []
 
@@ -275,7 +299,7 @@ def assemble_zone1(
                 f"  PURPOSE: {summary_text}"
             )
         else:
-            parts.append(format_file_header(dep_row, long=long_mode))
+            parts.append(format_file_header(dep_row, long=long_mode, repo_root=repo_root))
 
     return "\n\n".join(parts)
 
@@ -284,6 +308,7 @@ def assemble_zone2(
     conn: sqlite3.Connection,
     target_file: str,
     long_mode: bool = False,
+    repo_root: Path | None = None,
 ) -> str:
     parts = []
 
@@ -315,7 +340,7 @@ def assemble_zone2(
                 "SELECT * FROM functions WHERE id = ?", (row["callee_id"],)
             ).fetchone()
             if fn_row:
-                parts.append(format_function_record(fn_row, long=long_mode))
+                parts.append(format_function_record(fn_row, long=long_mode, repo_root=repo_root))
 
     if callers:
         parts.append("CALLERS (external functions that call into this file):")
@@ -324,7 +349,7 @@ def assemble_zone2(
                 "SELECT * FROM functions WHERE id = ?", (row["caller_id"],)
             ).fetchone()
             if fn_row:
-                parts.append(format_function_record(fn_row, long=False))
+                parts.append(format_function_record(fn_row, long=False, repo_root=repo_root))
 
     return "\n\n".join(parts)
 
@@ -347,19 +372,19 @@ def assemble_context(
     centrality = compute_centrality(conn, target_file)
 
     zone3 = assemble_zone3(conn, repo_root, target_file)
-    zone0 = assemble_zone0(conn, target_file, target_line, long_summaries=True)
-    zone1 = assemble_zone1(conn, target_file, centrality, long_mode=True)
-    zone2 = assemble_zone2(conn, target_file, long_mode=False)
+    zone0 = assemble_zone0(conn, target_file, target_line, long_summaries=True, repo_root=repo_root)
+    zone1 = assemble_zone1(conn, target_file, centrality, long_mode=True, repo_root=repo_root)
+    zone2 = assemble_zone2(conn, target_file, long_mode=False, repo_root=repo_root)
 
     def total_tokens(*zones: str) -> int:
         return sum(len(z) // 4 for z in zones if z)
 
     if total_tokens(zone3, zone0, zone1, zone2) > budget:
-        zone0 = assemble_zone0(conn, target_file, target_line, long_summaries=False)
-        zone2 = assemble_zone2(conn, target_file, long_mode=False)
+        zone0 = assemble_zone0(conn, target_file, target_line, long_summaries=False, repo_root=repo_root)
+        zone2 = assemble_zone2(conn, target_file, long_mode=False, repo_root=repo_root)
 
     if total_tokens(zone3, zone0, zone1, zone2) > budget:
-        zone1 = assemble_zone1(conn, target_file, centrality, long_mode=False)
+        zone1 = assemble_zone1(conn, target_file, centrality, long_mode=False, repo_root=repo_root)
 
     if total_tokens(zone3, zone0, zone1) > budget:
         zone2 = ""

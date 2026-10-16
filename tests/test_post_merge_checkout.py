@@ -116,15 +116,29 @@ def test_post_merge_checkout_without_db_no_crash(tmp_path):
 
 
 def test_post_merge_always_exits_zero(tmp_path, capsys):
-    import subprocess as _sp
+    from click.testing import CliRunner
+
+    from ctx_engine.cli import main as _cli_main
 
     repo = _make_repo(tmp_path)
+    runner = CliRunner()
     for args in (["post-merge"], ["post-checkout", "--branch-flag", "0"]):
-        result = _sp.run(
-            ["ctx", *args, "--repo-root", str(repo)],
-            capture_output=True, text=True,
-        )
-        assert result.returncode == 0, result.stderr
+        result = runner.invoke(_cli_main, [*args, "--repo-root", str(repo)])
+        assert result.exit_code == 0, result.output
+
+    # Also verify the installed console script resolves and exits 0 when
+    # invoked as a subprocess (PATH is fixed by tests/conftest.py).
+    import shutil as _shutil
+    import subprocess as _sp
+
+    ctx_bin = _shutil.which("ctx")
+    if ctx_bin is not None:
+        for args in (["post-merge"], ["post-checkout", "--branch-flag", "0"]):
+            proc = _sp.run(
+                [ctx_bin, *args, "--repo-root", str(repo)],
+                capture_output=True, text=True,
+            )
+            assert proc.returncode == 0, proc.stderr
 
 
 def test_install_hooks_writes_merge_and_checkout(tmp_path):
