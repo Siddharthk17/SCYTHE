@@ -334,8 +334,16 @@ def assemble_context(
     repo_root: Path,
     target_file: str,
     target_line: int | None = None,
-    budget: int = 8000,
+    budget: int | None = None,
 ) -> str:
+    if budget is None:
+        try:
+            from ctx_engine.config import get_config_value as _get_config_value
+
+            budget = int(_get_config_value(repo_root, "context.token_budget"))
+        except (ValueError, TypeError):
+            budget = 8000
+    centrality = compute_centrality(conn, target_file)
     centrality = compute_centrality(conn, target_file)
 
     zone3 = assemble_zone3(conn, repo_root, target_file)

@@ -53,8 +53,18 @@ def get_anthropic_client() -> "anthropic.Anthropic":
         ) from err
     return _anthropic.Anthropic(api_key=api_key)
 
-def get_model_name() -> str:
-    """Get the model name from CTX_LLM_MODEL environment variable or default to claude-haiku-4-5-20251001."""
+def get_model_name(repo_root=None) -> str:
+    """Get the summarization model: env CTX_LLM_MODEL > config llm.model > default."""
+    direct = os.environ.get("CTX_LLM_MODEL")
+    if direct:
+        return direct
+    if repo_root is not None:
+        try:
+            from ctx_engine.config import get_config_value as _get_config_value
+
+            return _get_config_value(repo_root, "llm.model")
+        except (ValueError, TypeError):
+            pass
     return os.environ.get("CTX_LLM_MODEL", "claude-haiku-4-5-20251001")
 
 def call_llm_with_retry(

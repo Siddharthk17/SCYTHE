@@ -1,6 +1,6 @@
 """`ctx doctor` — comprehensive health check with auto-fixes for common issues.
 
-Runs a fixed checklist of 36 health checks grouped into 7 categories and prints
+Runs a fixed checklist of 41 health checks grouped into 8 categories and prints
 a color-coded pass/fail report. With --fix, applies safe automated fixes for
 issues that have a known remediation. With --json, emits a machine-readable
 report for CI pipelines and the MCP server.
@@ -18,7 +18,9 @@ from pathlib import Path
 from ctx_engine.db import connect, init_schema
 from ctx_engine.commands.export_cmd import run_export
 from ctx_engine.commands.install_hooks import (
+    POST_CHECKOUT_HOOK,
     POST_COMMIT_HOOK,
+    POST_MERGE_HOOK,
     PRE_COMMIT_HOOK,
     run_install_hooks,
 )
@@ -688,6 +690,140 @@ def _check_changes_index(repo_root: Path) -> CheckResult:
                        "index missing", auto_fix=True, fix_label="create idx_changes_file_time")
 
 
+# ── Category H — Configuration & Extensibility ────────────────────────────────
+
+
+def _check_config_valid_toml(repo_root: Path) -> CheckResult:
+    p = repo_root / ".ctx" / "config.toml"
+    if not p.exists():
+        return CheckResult("H1", "Configuration & Extensibility", "config.toml valid TOML", True,
+                           detail="(absent — all defaults in effect)")
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib
+    try:
+        with open(p, "rb") as handle:
+            tomllib.load(handle)
+    except Exception as err:
+        return CheckResult("H1", "Configuration & Extensibility", "config.toml valid TOML", False,
+                           f"malformed TOML: {err}")
+    return CheckResult("H1", "Configuration & Extensibility", "config.toml valid TOML", True)
+
+
+def _check_config_no_forbidden_keys(repo_root: Path) -> CheckResult:
+    from ctx_engine.config import FORBIDDEN_KEY_PATTERNS
+
+    p = repo_root / ".ctx" / "config.toml"
+    if not p.exists():
+        return CheckResult("H2", "Configuration & Extensibility", "no forbidden keys in config", True)
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib
+    try:
+        with open(p, "rb") as handle:
+            data = tomllib.load(handle)
+    except Exception:
+        return CheckResult("H2", "Configuration & Extensibility", "no forbidden keys in config", True,
+                           detail="(H1 failed — cannot parse)")
+    offenders = []
+    if isinstance(data, dict):
+        for section, values in data.items():
+            if not isinstance(values, dict):
+                continue
+            for key in values:
+                dotted = f"{section}.{key}"
+                if any(pattern in dotted.lower() for pattern in FORBIDDEN_KEY_PATTERNS):
+                    offenders.append(dotted)
+    if offenders:
+        return CheckResult(
+            "H2", "Configuration & Extensibility", "no forbidden keys in config", False,
+            f"forbidden key: {', '.join(sorted(offenders))}",
+            auto_fix=True, fix_label="remove forbidden keys from config.toml",
+        )
+    return CheckResult("H2", "Configuration & Extensibility", "no forbidden keys in config", True)
+
+
+def _check_plugins_valid(repo_root: Path) -> CheckResult:
+    from ctx_engine.intelligence.plugins import discover_plugins, load_plugin
+
+    plugins = discover_plugins(repo_root)
+    if not plugins:
+        return CheckResult("H3", "Configuration & Extensibility", "plugins valid", True,
+                           detail="(none installed)")
+    invalid = [info.path.name for info in plugins if load_plugin(info) is None]
+    if invalid:
+        return CheckResult(
+            "H3", "Configuration & Extensibility", "plugins valid", False,
+            f"{len(plugins) - len(invalid)} of {len(plugins)} valid "
+            f"(invalid: {', '.join(sorted(invalid))})",
+        )
+    return CheckResult("H3", "Configuration & Extensibility", "plugins valid", True,
+                       detail=f"({len(plugins)} of {len(plugins)} valid)")
+
+
+def _check_costs_parseable(repo_root: Path) -> CheckResult:
+    p = repo_root / ".ctx" / "costs.jsonl"
+    if not p.exists():
+        return CheckResult("H4", "Configuration & Extensibility", "costs.jsonl parseable", True,
+                           detail="(no spend recorded yet)")
+    valid = 0
+    corrupt = 0
+    try:
+        import json as _json
+
+        with open(p, encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    _json.loads(line)
+                    valid += 1
+                except (ValueError, TypeError):
+                    corrupt += 1
+    except OSError as err:
+        return CheckResult("H4", "Configuration & Extensibility", "costs.jsonl parseable", False,
+                           f"cannot read: {err}")
+    if corrupt:
+        return CheckResult("H4", "Configuration & Extensibility", "costs.jsonl parseable", True,
+                           detail=f"({valid} entries, {corrupt} corrupted lines skipped)")
+    return CheckResult("H4", "Configuration & Extensibility", "costs.jsonl parseable", True,
+                       detail=f"({valid} entries)")
+
+
+def _check_all_hooks(repo_root: Path) -> CheckResult:
+    expected = {
+        "pre-commit": PRE_COMMIT_HOOK.strip(),
+        "post-commit": POST_COMMIT_HOOK.strip(),
+        "post-merge": POST_MERGE_HOOK.strip(),
+        "post-checkout": POST_CHECKOUT_HOOK.strip(),
+    }
+    missing = []
+    for name, snippet in expected.items():
+        hook_path = repo_root / ".git" / "hooks" / name
+        if not hook_path.exists():
+            missing.append(name)
+            continue
+        try:
+            actual = hook_path.read_text()
+        except (PermissionError, OSError):
+            missing.append(name)
+            continue
+        if snippet not in actual:
+            missing.append(name)
+            continue
+        if not os.access(str(hook_path), os.X_OK):
+            missing.append(name)
+    if missing:
+        return CheckResult(
+            "H5", "Configuration & Extensibility", "all four git hooks installed", False,
+            f"{' / '.join(sorted(missing))} NOT INSTALLED",
+            auto_fix=True, fix_label="run ctx install-hooks",
+        )
+    return CheckResult("H5", "Configuration & Extensibility", "all four git hooks installed", True)
+
+
 # ── Orchestration ─────────────────────────────────────────────────────────────
 
 
@@ -699,6 +835,7 @@ CATEGORY_NAMES = {
     "E": "Git Hooks",
     "F": "Output Files",
     "G": "Performance",
+    "H": "Configuration & Extensibility",
 }
 
 
@@ -748,6 +885,12 @@ def _collect_checks(repo_root: Path) -> list[CheckResult]:
     checks.append(_check_functions_file_index(repo_root))
     checks.append(_check_callgraph_indices(repo_root))
     checks.append(_check_changes_index(repo_root))
+    # H — Configuration & Extensibility
+    checks.append(_check_config_valid_toml(repo_root))
+    checks.append(_check_config_no_forbidden_keys(repo_root))
+    checks.append(_check_plugins_valid(repo_root))
+    checks.append(_check_costs_parseable(repo_root))
+    checks.append(_check_all_hooks(repo_root))
     return checks
 
 
@@ -808,6 +951,50 @@ def _apply_fix(check: CheckResult, repo_root: Path) -> bool:
                 return True
         if check.id == "E1" or check.id == "E2" or check.id == "E3":
             # All hook fixes route through ctx install-hooks (idempotent)
+            run_install_hooks(repo_root)
+            return True
+        if check.id == "H2":  # strip forbidden keys, keep everything else
+            from ctx_engine.config import FORBIDDEN_KEY_PATTERNS
+
+            p = repo_root / ".ctx" / "config.toml"
+            if not p.exists():
+                return False
+            try:
+                import tomllib
+            except ModuleNotFoundError:
+                import tomli as tomllib
+            try:
+                with open(p, "rb") as handle:
+                    data = tomllib.load(handle)
+            except Exception:
+                return False
+            removed = []
+            if isinstance(data, dict):
+                for section in list(data):
+                    values = data[section]
+                    if not isinstance(values, dict):
+                        continue
+                    for key in list(values):
+                        dotted = f"{section}.{key}"
+                        if any(pattern in dotted.lower() for pattern in FORBIDDEN_KEY_PATTERNS):
+                            del values[key]
+                            removed.append(dotted)
+                    if not values:
+                        del data[section]
+            if not removed:
+                return False
+            from ctx_engine.config import write_toml
+
+            if data:
+                write_toml(data, p)
+            else:
+                try:
+                    p.unlink()
+                except FileNotFoundError:
+                    pass
+            print(f"    removed forbidden key(s): {', '.join(sorted(removed))}")
+            return True
+        if check.id == "H5":  # install all four hooks
             run_install_hooks(repo_root)
             return True
         if check.id in ("F1", "F2", "F3", "F4"):  # run ctx export

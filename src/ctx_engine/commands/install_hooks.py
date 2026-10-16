@@ -15,6 +15,15 @@ POST_COMMIT_HOOK: str = """#!/bin/sh
 ctx log-commit --repo-root "$(git rev-parse --show-toplevel)"
 """
 
+POST_MERGE_HOOK: str = """#!/bin/sh
+ctx post-merge --repo-root "$(git rev-parse --show-toplevel)"
+"""
+
+POST_CHECKOUT_HOOK: str = """#!/bin/sh
+# Git passes: <prev-HEAD> <new-HEAD> <branch-flag>
+ctx post-checkout --repo-root "$(git rev-parse --show-toplevel)" --prev-head "$1" --new-head "$2" --branch-flag "$3"
+"""
+
 
 def _write_hook_safe(hook_path: Path, content: str, hook_label: str, git_dir: Path) -> bool:
     """Install a hook file with backup of any existing hook. Returns True if written."""
@@ -53,14 +62,18 @@ def run_install_hooks(repo_root: Path) -> None:
 
     pre_commit_path = hooks_dir / "pre-commit"
     post_commit_path = hooks_dir / "post-commit"
+    post_merge_path = hooks_dir / "post-merge"
+    post_checkout_path = hooks_dir / "post-checkout"
 
     print("ctx install-hooks")
     print()
 
     _write_hook_safe(pre_commit_path, PRE_COMMIT_HOOK, "pre-commit", git_dir)
     _write_hook_safe(post_commit_path, POST_COMMIT_HOOK, "post-commit", git_dir)
+    _write_hook_safe(post_merge_path, POST_MERGE_HOOK, "post-merge", git_dir)
+    _write_hook_safe(post_checkout_path, POST_CHECKOUT_HOOK, "post-checkout", git_dir)
 
-    for p in (pre_commit_path, post_commit_path):
+    for p in (pre_commit_path, post_commit_path, post_merge_path, post_checkout_path):
         if p.exists() and not os.access(str(p), os.X_OK):
             p.chmod(0o755)
 

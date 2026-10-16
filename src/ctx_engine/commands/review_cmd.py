@@ -607,7 +607,7 @@ def run_review(
     )
 
     client = get_anthropic_client()
-    model = _resolve_review_model()
+    model = _resolve_review_model(repo_root)
     repo_name = repo_root.name
 
     # One LLM call per batch of 5 files; each call covers the full payload
@@ -624,20 +624,48 @@ def run_review(
         response, in_tok, out_tok = call_llm_with_retry(
             client, model, REVIEW_SYSTEM_PROMPT, prompt, max_tokens=6000
         )
+        try:
+            from ctx_engine.intelligence.cost_tracking import (
+                check_budget_warning as _check_budget,
+                log_cost as _log_cost,
+            )
+
+            _log_cost(repo_root, "review", model, in_tok, out_tok)
+        except Exception:
+            pass
         per_file = parse_batch_response(response, batch)
         for payload in batch:
             responses.append((payload, per_file[payload.path], in_tok, out_tok))
 
     print_review_report(payloads, responses, mode_desc)
+    try:
+        from ctx_engine.intelligence.cost_tracking import check_budget_warning
+
+        warning = check_budget_warning(repo_root)
+        if warning:
+            print(f"  {warning}")
+    except Exception:
+        pass
 
 
-def _resolve_review_model() -> str:
-    """Model precedence: CTX_REVIEW_MODEL > CTX_LLM_MODEL > haiku default.
+def _resolve_review_model(repo_root=None) -> str:
+    """Model precedence: CTX_REVIEW_MODEL > CTX_LLM_MODEL > config > haiku default.
 
     Reviews are frequent and mechanical — the fast summarization model is the
     right default, unlike ctx explain (which defaults to a larger model).
     """
     import os
+
+    direct = os.environ.get("CTX_REVIEW_MODEL") or os.environ.get("CTX_LLM_MODEL")
+    if direct:
+        return direct
+    if repo_root is not None:
+        try:
+            from ctx_engine.config import get_config_value as _get_config_value
+
+            return _get_config_value(repo_root, "llm.review_model")
+        except (ValueError, TypeError):
+            pass
 
     return (
         os.environ.get("CTX_REVIEW_MODEL")

@@ -161,8 +161,13 @@ def test_validate_parse_error(validatable_repo, caplog, capsys):
     assert "parse errors" in captured.err.lower()
 
 
-def test_validate_not_in_git(tmp_path):
+def test_validate_not_in_git(tmp_path, monkeypatch):
     """Outside a git repo -> clear error."""
+    # tmp_path may sit under a git-owned parent (e.g. /tmp/.git in containers).
+    # Ceiling git discovery so the test never depends on host layout.
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    monkeypatch.delenv("GIT_DIR", raising=False)
+    monkeypatch.delenv("GIT_WORK_TREE", raising=False)
     db_path = tmp_path / ".ctx" / "index.db"
     db_path.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(db_path)

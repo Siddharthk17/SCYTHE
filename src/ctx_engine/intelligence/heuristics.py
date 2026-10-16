@@ -30,9 +30,12 @@ class HeuristicReport:
     detected: list[DangerRecord] = field(default_factory=list)
     added: list[DangerRecord] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
+    plugin_count: int = 0
+    plugin_names: list[str] = field(default_factory=list)
+    plugin_dangers: int = 0
 
 
-def detect_high_call_fanin(conn) -> list[DangerRecord]:
+def detect_high_call_fanin(conn, threshold: int = CALL_FANIN_THRESHOLD) -> list[DangerRecord]:
     rows = conn.execute(
         """SELECT callee_id, COUNT(*) as caller_count
            FROM call_graph
@@ -40,7 +43,7 @@ def detect_high_call_fanin(conn) -> list[DangerRecord]:
            GROUP BY callee_id
            HAVING caller_count >= ?
            ORDER BY caller_count DESC""",
-        (CALL_FANIN_THRESHOLD,),
+        (threshold,),
     ).fetchall()
 
     dangers = []
@@ -66,10 +69,10 @@ def detect_high_call_fanin(conn) -> list[DangerRecord]:
     return dangers
 
 
-def detect_high_import_fanin(conn) -> list[DangerRecord]:
+def detect_high_import_fanin(conn, threshold: int = IMPORT_FANIN_THRESHOLD) -> list[DangerRecord]:
     rows = conn.execute(
         "SELECT path, used_by_count FROM files WHERE used_by_count >= ?",
-        (IMPORT_FANIN_THRESHOLD,),
+        (threshold,),
     ).fetchall()
 
     dangers = []
@@ -187,13 +190,58 @@ def run_heuristic_detection(
     Replace pattern: stale auto-detections are deleted so the table
     always reflects current code. Human/model records are never touched.
     """
+    from ctx_engine.config import get_config_value as _get_config_value
+
     root = repo_root if repo_root is not None else Path(".")
     all_dangers: list[DangerRecord] = []
 
-    all_dangers.extend(detect_high_call_fanin(conn))
-    all_dangers.extend(detect_high_import_fanin(conn))
+    try:
+        call_threshold = _get_config_value(root, "heuristics.call_fanin_threshold")
+    except (ValueError, TypeError):
+        call_threshold = CALL_FANIN_THRESHOLD
+    try:
+        import_threshold = _get_config_value(root, "heuristics.import_fanin_threshold")
+    except (ValueError, TypeError):
+        import_threshold = IMPORT_FANIN_THRESHOLD
+
+    all_dangers.extend(detect_high_call_fanin(conn, threshold=call_threshold))
+    all_dangers.extend(detect_high_import_fanin(conn, threshold=import_threshold))
     all_dangers.extend(detect_global_mutations(conn))
     all_dangers.extend(detect_invariant_comments(conn, root))
+
+    plugin_count = 0
+    plugin_names: list[str] = []
+    plugin_dangers = 0
+    try:
+        from ctx_engine.intelligence.plugins import (
+            discover_plugins,
+            load_plugin,
+            run_plugin_safely,
+        )
+
+        for plugin_info in discover_plugins(root):
+            detect_fn = load_plugin(plugin_info)
+            if detect_fn is None:
+                continue
+            plugin_records = run_plugin_safely(plugin_info, detect_fn, conn, root)
+            valid = 0
+            for record in plugin_records:
+                if not isinstance(record, dict):
+                    continue
+                if not {"id", "scope", "description", "reason"} <= set(record):
+                    continue
+                all_dangers.append(DangerRecord(
+                    id=str(record["id"]),
+                    scope=str(record["scope"]),
+                    description=str(record["description"]),
+                    reason=record.get("reason"),
+                ))
+                valid += 1
+            plugin_count += 1
+            plugin_names.append(plugin_info.path.name)
+            plugin_dangers += valid
+    except Exception:
+        pass
 
     if dry_run:
         existing_auto = set(
@@ -212,7 +260,9 @@ def run_heuristic_detection(
             if row:
                 would_remove.append(row["description"])
         return HeuristicReport(
-            detected=all_dangers, added=would_add, removed=would_remove
+            detected=all_dangers, added=would_add, removed=would_remove,
+            plugin_count=plugin_count, plugin_names=plugin_names,
+            plugin_dangers=plugin_dangers,
         )
 
     existing_auto = set(
@@ -248,4 +298,8 @@ def run_heuristic_detection(
             removed.append(row["description"])
 
     conn.commit()
-    return HeuristicReport(detected=all_dangers, added=added, removed=removed)
+    return HeuristicReport(
+        detected=all_dangers, added=added, removed=removed,
+        plugin_count=plugin_count, plugin_names=plugin_names,
+        plugin_dangers=plugin_dangers,
+    )

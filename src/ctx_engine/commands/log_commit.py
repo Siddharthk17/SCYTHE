@@ -29,6 +29,15 @@ def get_commit_metadata(repo_root: Path, commit_hash: str) -> tuple[str, list[st
     return subject, [p.strip() for p in changed if p.strip()]
 
 
+def _changes_cap(repo_root: Path) -> int:
+    try:
+        from ctx_engine.config import get_config_value as _get_config_value
+
+        return int(_get_config_value(repo_root, "history.changes_per_file_cap"))
+    except (ValueError, TypeError):
+        return 20
+
+
 def run_log_commit(repo_root: Path, commit_hash: str = "HEAD") -> None:
     """Record commit metadata in the changes table."""
     db_path = repo_root / ".ctx" / "index.db"
@@ -57,6 +66,7 @@ def run_log_commit(repo_root: Path, commit_hash: str = "HEAD") -> None:
 
     now = datetime.now(timezone.utc).isoformat()
     inserted = 0
+    cap = _changes_cap(repo_root)
 
     with conn:
         for file_path in changed_files:
@@ -82,10 +92,10 @@ def run_log_commit(repo_root: Path, commit_hash: str = "HEAD") -> None:
                     SELECT id FROM changes
                     WHERE file = ?
                     ORDER BY timestamp DESC, id DESC
-                    LIMIT 20
+                    LIMIT ?
                   )
                 """,
-                (file_path, file_path),
+                (file_path, file_path, cap),
             )
 
     conn.close()

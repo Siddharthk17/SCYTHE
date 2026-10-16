@@ -16,6 +16,17 @@ TOKEN_BUDGET = 8000
 BENCHMARK_SAMPLE_SIZE = 10
 HIGH_FANIN_CALLERS = 10
 
+
+def _token_budget(repo_root: Path | None = None) -> int:
+    if repo_root is not None:
+        try:
+            from ctx_engine.config import get_config_value as _get_config_value
+
+            return int(_get_config_value(repo_root, "context.token_budget"))
+        except (ValueError, TypeError):
+            pass
+    return TOKEN_BUDGET
+
 # Weights must sum to 100.
 SCORE_WEIGHTS = {
     "summary_coverage": 30,
@@ -110,7 +121,8 @@ def measure_token_efficiency(conn: sqlite3.Connection, repo_root: Path) -> dict:
         token_counts.append(len(ctx_str) // 4)
     avg = int(sum(token_counts) / len(token_counts)) if token_counts else 0
     mx = max(token_counts) if token_counts else 0
-    under = sum(1 for t in token_counts if t <= TOKEN_BUDGET)
+    budget = _token_budget(repo_root)
+    under = sum(1 for t in token_counts if t <= budget)
     return {
         "avg": avg,
         "max": mx,
@@ -245,7 +257,7 @@ def print_benchmark_report(
     print(sep)
     print(f"  Average tokens per get_context():  {token_eff['avg']:,}")
     print(f"  Maximum tokens (worst case):       {token_eff['max']:,}  "
-          f"{_mark(token_eff['all_under_budget'])} (under {TOKEN_BUDGET:,} budget)")
+          f"{_mark(token_eff['all_under_budget'])} (under {_token_budget(repo_root):,} budget)")
     print(f"  Files within budget:               {token_eff['under_budget']} of "
           f"{token_eff['sampled']}")
     print()

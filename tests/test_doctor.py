@@ -51,8 +51,8 @@ def test_doctor_collect_runs_all_categories(git_repo):
     """All checks should be produced; no crashes on an empty (but valid) repo."""
     _make_indexed_repo(git_repo)
     checks = _collect_checks(git_repo)
-    # 7 A + 5 B + 7 C + 4 D + 3 E + 6 F + 4 G = 36
-    assert len(checks) == 36
+    # 7 A + 5 B + 7 C + 4 D + 3 E + 6 F + 4 G + 5 H = 41
+    assert len(checks) == 41
     categories = {c.category for c in checks}
     assert "Prerequisites" in categories
     assert "Schema" in categories

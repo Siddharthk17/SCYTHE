@@ -299,7 +299,16 @@ def print_llm_suggestions(
     import os
 
     client = get_anthropic_client()
-    model = os.environ.get("CTX_LLM_MODEL") or "claude-haiku-4-5-20251001"
+    direct = os.environ.get("CTX_LLM_MODEL")
+    if direct:
+        model = direct
+    else:
+        try:
+            from ctx_engine.config import get_config_value as _get_config_value
+
+            model = _get_config_value(repo_root, "llm.review_model")
+        except (ValueError, TypeError):
+            model = os.environ.get("CTX_LLM_MODEL") or "claude-haiku-4-5-20251001"
     for fn_id, items in targets.items():
         static_block = "\n".join(f"- [{s.priority}] {s.title}: {s.detail}" for s in items)
         prompt = (
@@ -309,12 +318,26 @@ def print_llm_suggestions(
             "the findings above. Match the existing test style of the repo. "
             "Return test code only."
         )
-        response, _, _ = call_llm_with_retry(
+        response, in_tok, out_tok = call_llm_with_retry(
             client, model,
             "You generate focused pytest test stubs from static analysis findings.",
             prompt, max_tokens=3000,
         )
+        try:
+            from ctx_engine.intelligence.cost_tracking import log_cost as _log_cost
+
+            _log_cost(repo_root, "test-suggest", model, in_tok, out_tok)
+        except Exception:
+            pass
         print(f"ctx test-suggest \"{fn_id}\" --llm")
         print()
         print(response.strip())
         print()
+    try:
+        from ctx_engine.intelligence.cost_tracking import check_budget_warning
+
+        warning = check_budget_warning(repo_root)
+        if warning:
+            print(f"  {warning}")
+    except Exception:
+        pass

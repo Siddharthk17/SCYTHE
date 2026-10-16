@@ -6,7 +6,12 @@ from datetime import datetime
 from pathlib import Path
 from ctx_engine.db import connect
 from ctx_engine.discovery import EXTENSION_TO_LANGUAGE
-from ctx_engine.commands.install_hooks import PRE_COMMIT_HOOK, POST_COMMIT_HOOK
+from ctx_engine.commands.install_hooks import (
+    PRE_COMMIT_HOOK,
+    POST_COMMIT_HOOK,
+    POST_MERGE_HOOK,
+    POST_CHECKOUT_HOOK,
+)
 from ctx_engine.daemon.daemon import (
     is_process_alive,
     read_pid_file,
@@ -162,6 +167,84 @@ def _shared_metadata_status(conn: sqlite3.Connection, repo_root: Path) -> dict:
     return result
 
 
+def _config_status_line(repo_root: Path) -> str:
+    from ctx_engine.config import get_config_source, valid_keys
+
+    config_path = repo_root / ".ctx" / "config.toml"
+    if not config_path.exists():
+        return "NOT CONFIGURED (run 'ctx config init')"
+    customized = sum(
+        1 for key in valid_keys() if get_config_source(repo_root, key) == "F"
+    )
+    total = len(valid_keys())
+    return f".ctx/config.toml present ({customized} keys customized, {total - customized} at default)"
+
+
+def _costs_status_lines(repo_root: Path) -> list[str]:
+    from datetime import timedelta
+
+    from ctx_engine.config import get_config_value
+    from ctx_engine.intelligence.cost_tracking import _filtered_entries
+
+    now = datetime.now()
+    try:
+        from datetime import timezone as _tz
+
+        now = datetime.now(_tz.utc)
+        week_ago = now - timedelta(days=7)
+        day_ago = now - timedelta(days=1)
+    except Exception:
+        week_ago = day_ago = now
+
+    def _sum(since) -> float:
+        total = 0.0
+        try:
+            for entry in _filtered_entries(repo_root, since):
+                try:
+                    total += float(entry.get("estimated_cost_usd", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    continue
+        except Exception:
+            pass
+        return total
+
+    from datetime import timezone as _tz2
+
+    try:
+        epoch = datetime(1970, 1, 1, tzinfo=_tz2.utc)
+        all_time = _sum(epoch)
+    except Exception:
+        all_time = 0.0
+    last7 = _sum(week_ago)
+    today = _sum(day_ago)
+    lines = [f"${all_time:.2f} all-time, ${last7:.2f} last 7 days, ${today:.2f} today"]
+    try:
+        budget = float(get_config_value(repo_root, "costs.monthly_budget_usd") or 0.0)
+    except (ValueError, TypeError):
+        budget = 0.0
+    if budget and budget > 0:
+        lines.append(f"(monthly budget: ${budget:.2f})")
+    else:
+        lines.append("(monthly budget: not set)")
+    return lines
+
+
+def _plugins_status_line(repo_root: Path) -> str:
+    from ctx_engine.intelligence.plugins import discover_plugins, load_plugin
+
+    plugins = discover_plugins(repo_root)
+    if not plugins:
+        return "none (add .py files to .ctx/plugins/ to extend danger detection)"
+    valid = sum(1 for info in plugins if load_plugin(info) is not None)
+    invalid = len(plugins) - valid
+    if invalid:
+        return (
+            f"{len(plugins)} discovered ({valid} valid, {invalid} invalid "
+            f"— run 'ctx plugin list')"
+        )
+    return f"{len(plugins)} discovered ({valid} valid)"
+
+
 def run_status(repo_root: Path, full: bool = False) -> None:
     """Read the SQLite index database and display a summary of current repository state."""
     db_path = repo_root / ".ctx" / "index.db"
@@ -207,6 +290,12 @@ def run_status(repo_root: Path, full: bool = False) -> None:
     git_dir = repo_root / ".git"
     pre_status = _hook_status(git_dir, "pre-commit", PRE_COMMIT_HOOK)
     post_status = _hook_status(git_dir, "post-commit", POST_COMMIT_HOOK)
+    merge_status = _hook_status(git_dir, "post-merge", POST_MERGE_HOOK)
+    checkout_status = _hook_status(git_dir, "post-checkout", POST_CHECKOUT_HOOK)
+
+    config_line = _config_status_line(repo_root)
+    costs_lines = _costs_status_lines(repo_root)
+    plugins_line = _plugins_status_line(repo_root)
 
     recent_changes = conn.execute(
         "SELECT commit_hash, summary, timestamp FROM changes ORDER BY timestamp DESC LIMIT 5"
@@ -336,9 +425,14 @@ def run_status(repo_root: Path, full: bool = False) -> None:
                 print(f"            → run 'ctx sync' to fix")
         else:
             print(f"  health:   {health_parts[0]}")
-        print(f"  hooks:    pre-commit {pre_status}, post-commit {post_status}")
+        print(f"  hooks:    pre-commit {pre_status}, post-commit {post_status}, post-merge {merge_status}, post-checkout {checkout_status}")
         if "NOT INSTALLED" in pre_status:
             print(f"            → run 'ctx install-hooks' to enable commit-time validation")
+        print(f"  config:   {config_line}")
+        print(f"  costs:    {costs_lines[0]}")
+        for extra in costs_lines[1:]:
+            print(f"            {extra}")
+        print(f"  plugins:  {plugins_line}")
         print(f"  mcp:      {mcp_config_status}")
         print(f"  watcher:  {watcher_status}")
         print(f"  ollama:   {watcher_ollama}")
@@ -422,6 +516,15 @@ def run_status(repo_root: Path, full: bool = False) -> None:
         print("  git hooks:")
         print(f"    pre-commit  : {pre_status}")
         print(f"    post-commit : {post_status}")
+        print(f"    post-merge  : {merge_status}")
+        print(f"    post-checkout: {checkout_status}")
+        print()
+        print("  configuration & extensibility:")
+        print(f"    config: {config_line}")
+        print(f"    costs: {costs_lines[0]}")
+        for extra in costs_lines[1:]:
+            print(f"           {extra}")
+        print(f"    plugins: {plugins_line}")
         print()
         print("  export status:")
         for fname, status in sorted(export_statuses.items()):

@@ -37,11 +37,48 @@ from ctx_engine.discovery import (
 logger = logging.getLogger("ctx")
 
 
-def _debounce_seconds() -> float:
+def _debounce_seconds(repo_root: Path | None = None) -> float:
     try:
+        import os as _os
+
+        direct = _os.environ.get("CTX_WATCH_DEBOUNCE_MS")
+        if direct:
+            return float(direct) / 1000.0
+        if repo_root is not None:
+            try:
+                from ctx_engine.config import get_config_value as _get_config_value
+
+                return float(_get_config_value(repo_root, "watch.debounce_ms")) / 1000.0
+            except (ValueError, TypeError):
+                pass
         return float(os.environ.get("CTX_WATCH_DEBOUNCE_MS", "500")) / 1000.0
     except (ValueError, TypeError):
         return 0.5
+
+
+def _config_ollama_host(repo_root: Path) -> str:
+    direct = os.environ.get("CTX_OLLAMA_HOST")
+    if direct:
+        return direct
+    try:
+        from ctx_engine.config import get_config_value as _get_config_value
+
+        return _get_config_value(repo_root, "ollama.host")
+    except (ValueError, TypeError):
+        return "http://localhost:11434"
+
+
+def _config_ollama_model(repo_root: Path) -> str | None:
+    direct = os.environ.get("CTX_OLLAMA_MODEL")
+    if direct:
+        return direct
+    try:
+        from ctx_engine.config import get_config_value as _get_config_value
+
+        value = _get_config_value(repo_root, "ollama.model")
+        return value or None
+    except (ValueError, TypeError):
+        return None
 
 
 def run_watch(
@@ -83,12 +120,12 @@ def run_watch(
 
     model_name = None
     ollama_client = None
-    ollama_host = os.environ.get("CTX_OLLAMA_HOST", "http://localhost:11434")
+    ollama_host = _config_ollama_host(repo_root)
 
     if with_ollama:
         if is_ollama_available(ollama_host):
             available = get_available_models(ollama_host)
-            model_override = os.environ.get("CTX_OLLAMA_MODEL")
+            model_override = _config_ollama_model(repo_root)
             model_name = select_model(available, model_override)
             if model_name:
                 conn_factory = lambda: connect(db_path)
@@ -112,7 +149,7 @@ def run_watch(
         conn_factory=conn_factory,
         repo_root=repo_root,
         parseable_extensions=parseable_extensions,
-        debounce_seconds=_debounce_seconds(),
+        debounce_seconds=_debounce_seconds(repo_root),
         ollama_client=ollama_client,
         state_path=state_path,
     )
@@ -221,7 +258,7 @@ def run_watch_status(repo_root: Path) -> None:
     if pid is None or not is_process_alive(pid):
         if pid is not None:
             remove_pid_file(pid_path)
-        ollama_host = os.environ.get("CTX_OLLAMA_HOST", "http://localhost:11434")
+        ollama_host = _config_ollama_host(repo_root)
         print("  file watcher:")
         print("    status: NOT RUNNING")
         print(f"    ollama: {_ollama_status_text(ollama_host)}")

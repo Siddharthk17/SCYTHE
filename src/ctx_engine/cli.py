@@ -53,9 +53,9 @@ def status_cmd(repo_root: Path, full: bool) -> None:
 )
 @click.option(
     "--batch-size",
-    default=20,
+    default=None,
     type=int,
-    help="Number of files to process per LLM batch."
+    help="Number of files to process per LLM batch (default: summarize.batch_size from config)."
 )
 @click.option(
     "--force",
@@ -67,7 +67,7 @@ def status_cmd(repo_root: Path, full: bool) -> None:
     is_flag=True,
     help="Preview the summarization scope and estimated cost without making API calls."
 )
-def summarize_cmd(repo_root: Path, batch_size: int, force: bool, dry_run: bool) -> None:
+def summarize_cmd(repo_root: Path, batch_size: int | None, force: bool, dry_run: bool) -> None:
     """Bulk summarize files and functions needing updates."""
     from ctx_engine.commands.summarize import run_summarize
     try:
@@ -478,8 +478,14 @@ def danger_detect_cmd(repo_root: Path, dry_run: bool) -> None:
     else:
         click.echo("ctx danger detect")
         click.echo()
-        click.echo(f"  {len(result['added'])} danger zones added (auto)")
-        click.echo(f"  {len(result['removed'])} stale danger zones removed (auto)")
+        builtin_count = len(result['detected']) - result.get('plugin_dangers', 0)
+        click.echo(f"  Built-in heuristics: {builtin_count} danger zones detected")
+        plugin_count = result.get('plugin_count', 0)
+        if plugin_count:
+            names = ", ".join(result.get('plugin_names', []))
+            click.echo(f"  Plugins ({plugin_count} active): {result.get('plugin_dangers', 0)} danger zones detected ({names})")
+        click.echo()
+        click.echo(f"  {len(result['added'])} danger zones added (auto), {len(result['removed'])} removed.")
         click.echo()
         click.echo(f"  Total auto-detected: {len(result['detected'])}")
 
@@ -1086,6 +1092,181 @@ def history_cmd(repo_root: Path, file_path: str | None, author: str | None,
     except (FileNotFoundError, ValueError) as err:
         click.echo(f"Error: {err}", err=True)
         raise click.Abort()
+
+
+# ── Week 10 commands ──────────────────────────────────────────────────────────
+
+
+@main.group(name="config")
+def config_group() -> None:
+    """Manage .ctx/config.toml (init/get/set/list/reset/edit)."""
+
+
+@config_group.command(name="init")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+def config_init_cmd(repo_root: Path) -> None:
+    """Write .ctx/config.toml with all defaults."""
+    from ctx_engine.commands.config_cmd import run_config_init
+    run_config_init(repo_root.resolve())
+
+
+@config_group.command(name="get")
+@click.argument("key")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+def config_get_cmd(key: str, repo_root: Path) -> None:
+    """Print the resolved value for one dotted key."""
+    from ctx_engine.commands.config_cmd import run_config_get
+    try:
+        run_config_get(repo_root.resolve(), key)
+    except SystemExit as err:
+        raise click.Abort() if err.code else None
+
+
+@config_group.command(name="set")
+@click.argument("key")
+@click.argument("value")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+def config_set_cmd(key: str, value: str, repo_root: Path) -> None:
+    """Set one dotted key in .ctx/config.toml."""
+    from ctx_engine.commands.config_cmd import run_config_set
+    try:
+        run_config_set(repo_root.resolve(), key, value)
+    except SystemExit as err:
+        raise click.Abort() if err.code else None
+
+
+@config_group.command(name="list")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+def config_list_cmd(repo_root: Path) -> None:
+    """Show all keys with resolved values and source tags."""
+    from ctx_engine.commands.config_cmd import run_config_list
+    run_config_list(repo_root.resolve())
+
+
+@config_group.command(name="reset")
+@click.argument("key")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+def config_reset_cmd(key: str, repo_root: Path) -> None:
+    """Remove one key from config.toml, reverting to the default."""
+    from ctx_engine.commands.config_cmd import run_config_reset
+    try:
+        run_config_reset(repo_root.resolve(), key)
+    except SystemExit as err:
+        raise click.Abort() if err.code else None
+
+
+@config_group.command(name="edit")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+def config_edit_cmd(repo_root: Path) -> None:
+    """Open .ctx/config.toml in $EDITOR."""
+    from ctx_engine.commands.config_cmd import run_config_edit
+    try:
+        run_config_edit(repo_root.resolve())
+    except SystemExit as err:
+        raise click.Abort() if err.code else None
+
+
+@main.command(name="costs")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option("--since", default=None, help="Only entries at or after this date.")
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+def costs_cmd(repo_root: Path, since: str | None, json_output: bool) -> None:
+    """Show cumulative API spend from .ctx/costs.jsonl (estimated)."""
+    from ctx_engine.commands.costs_cmd import run_costs
+    try:
+        run_costs(repo_root.resolve(), since=since, json_output=json_output)
+    except (FileNotFoundError, ValueError) as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
+
+
+@main.command(name="post-merge")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+def post_merge_cmd(repo_root: Path) -> None:
+    """Advisory staleness check after a merge. Always exits 0."""
+    from ctx_engine.commands.post_merge_cmd import run_post_merge
+    run_post_merge(repo_root.resolve())
+
+
+@main.command(name="post-checkout")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option("--prev-head", default=None, help="Previous HEAD (git passes $1).")
+@click.option("--new-head", default=None, help="New HEAD (git passes $2).")
+@click.option("--branch-flag", default="1", help="Branch flag (git passes $3).")
+def post_checkout_cmd(repo_root: Path, prev_head: str | None,
+                      new_head: str | None, branch_flag: str) -> None:
+    """Advisory staleness check after a checkout. Always exits 0."""
+    from ctx_engine.commands.post_checkout_cmd import run_post_checkout
+    run_post_checkout(repo_root.resolve(), prev_head, new_head, branch_flag)
+
+
+@main.group(name="plugin")
+def plugin_group() -> None:
+    """List and validate .ctx/plugins/ heuristics."""
+
+
+@plugin_group.command(name="list")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+def plugin_list_cmd(repo_root: Path) -> None:
+    """List discovered plugins with validation status."""
+    from ctx_engine.commands.plugin_cmd import run_plugin_list
+    run_plugin_list(repo_root.resolve())
+
+
+@plugin_group.command(name="validate")
+@click.argument("path")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+def plugin_validate_cmd(path: str, repo_root: Path) -> None:
+    """Load and test-run one plugin file."""
+    from ctx_engine.commands.plugin_cmd import run_plugin_validate
+    try:
+        run_plugin_validate(repo_root.resolve(), path)
+    except SystemExit as err:
+        raise click.Abort() if err.code else None
 
 
 

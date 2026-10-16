@@ -35,6 +35,19 @@ from ctx_engine.intelligence.taint import propagate_taint
 
 logger = logging.getLogger("ctx")
 
+
+def _decay_factor(repo_root: Path | None = None) -> float:
+    if repo_root is not None:
+        try:
+            from ctx_engine.config import get_config_value as _get_config_value
+
+            return float(_get_config_value(repo_root, "confidence.decay_factor"))
+        except (ValueError, TypeError):
+            pass
+    from ctx_engine.intelligence.confidence import CONFIDENCE_DECAY_FACTOR
+
+    return CONFIDENCE_DECAY_FACTOR
+
 ADAPTERS = {
     "python": PythonAdapter(),
     "javascript": JavaScriptAdapter(),
@@ -231,7 +244,7 @@ def apply_parse_result(
         file_purpose = old_file["purpose"]
         file_summary = old_file["summary"]
         file_danger = old_file["danger"]
-        file_confidence = decay(old_file["confidence"])
+        file_confidence = decay(old_file["confidence"], decay_factor=_decay_factor(repo_root))
         file_is_stale = 1
         file_indexed_at = old_file["indexed_at"] or now
 
@@ -277,7 +290,7 @@ def apply_parse_result(
                 func_summary = old_func["summary"]
                 func_summary_long = old_func["summary_long"]
                 func_danger = old_func["danger"]
-                func_confidence = decay(old_func["confidence"])
+                func_confidence = decay(old_func["confidence"], decay_factor=_decay_factor(repo_root))
                 func_is_stale = 1
                 func_is_tainted = old_func["is_tainted"]
                 func_taint_source = old_func["taint_source"]
@@ -488,7 +501,7 @@ def reindex_file(
         file_purpose = old_file["purpose"]
         file_summary = old_file["summary"]
         file_danger = old_file["danger"]
-        file_confidence = decay(old_file["confidence"])
+        file_confidence = decay(old_file["confidence"], decay_factor=_decay_factor(repo_root))
         file_is_stale = 1
         file_indexed_at = old_file["indexed_at"] or now
 
@@ -539,7 +552,7 @@ def reindex_file(
                 func_summary = old_func["summary"]
                 func_summary_long = old_func["summary_long"]
                 func_danger = old_func["danger"]
-                func_confidence = decay(old_func["confidence"])
+                func_confidence = decay(old_func["confidence"], decay_factor=_decay_factor(repo_root))
                 func_is_stale = 1
                 func_is_tainted = old_func["is_tainted"]
                 func_taint_source = old_func["taint_source"]

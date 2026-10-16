@@ -52,8 +52,9 @@ def get_summarize_selection(
     conn: sqlite3.Connection,
     repo_root: Path,
     force: bool = False,
-    batch_size: int = 20,
+    batch_size: int | None = None,
     path_filter: set[str] | None = None,
+    batch_token_limit: int | None = None,
 ) -> tuple[list[dict], int, list[list[dict]]]:
     """Build file payloads for summarization selection.
 
@@ -62,6 +63,10 @@ def get_summarize_selection(
 
     Returns (files_data, total_funcs_needing_summary, batches).
     """
+    if batch_size is None:
+        batch_size = _summarize_batch_size(repo_root)
+    if batch_token_limit is None:
+        batch_token_limit = _summarize_batch_token_limit(repo_root)
     if force:
         files_rows = conn.execute("SELECT path, purpose, summary, danger, exports, imports, used_by_count, is_stale FROM files;").fetchall()
     elif path_filter is not None and len(path_filter) == 0:
@@ -165,17 +170,41 @@ def get_summarize_selection(
             "functions": funcs_payload
         })
 
-    batches = batch_files(files_data, max_files_per_batch=batch_size)
+    batches = batch_files(
+        files_data,
+        max_files_per_batch=batch_size,
+        max_tokens_per_batch=batch_token_limit,
+    )
     return files_data, total_funcs_needing_summary, batches
+
+
+def _summarize_batch_size(repo_root: Path) -> int:
+    try:
+        from ctx_engine.config import get_config_value as _get_config_value
+
+        return int(_get_config_value(repo_root, "summarize.batch_size"))
+    except (ValueError, TypeError):
+        return 20
+
+
+def _summarize_batch_token_limit(repo_root: Path) -> int:
+    try:
+        from ctx_engine.config import get_config_value as _get_config_value
+
+        return int(_get_config_value(repo_root, "summarize.batch_token_limit"))
+    except (ValueError, TypeError):
+        return 50000
 
 
 def run_summarize(
     repo_root: Path,
-    batch_size: int = 20,
+    batch_size: int | None = None,
     force: bool = False,
     dry_run: bool = False
 ) -> None:
     """Perform bulk LLM summarization of files/functions needing updates."""
+    if batch_size is None:
+        batch_size = _summarize_batch_size(repo_root)
     if batch_size < 1:
         raise ValueError(f"batch_size must be >= 1, got {batch_size}")
     db_path = repo_root / ".ctx" / "index.db"
@@ -218,7 +247,7 @@ def run_summarize(
     # (not function-local re-imports) so unittest.mock.patch targets on
     # ctx_engine.commands.summarize keep working.
     client = get_anthropic_client()
-    model = get_model_name()
+    model = get_model_name(repo_root)
 
     skipped_files: list[str] = []
     total_files_updated = 0
@@ -242,6 +271,12 @@ def run_summarize(
             total_funcs_updated += funcs_up
             total_in_tokens += in_tok
             total_out_tokens += out_tok
+            try:
+                from ctx_engine.intelligence.cost_tracking import log_cost as _log_cost
+
+                _log_cost(repo_root, "summarize", model, in_tok, out_tok)
+            except Exception:
+                pass
 
             print(f"[{i+1}/{len(batches)}] batch: {len(batch)} files, {batch_funcs_count} functions -> done (in: {in_tok:,} tok, out: {out_tok:,} tok)")
         except Exception as e:
@@ -271,3 +306,11 @@ def run_summarize(
     if skipped_count > 0:
         for skip_path in sorted(skipped_files):
             print(f"      - {skip_path}")
+    try:
+        from ctx_engine.intelligence.cost_tracking import check_budget_warning
+
+        warning = check_budget_warning(repo_root)
+        if warning:
+            print(f"  {warning}")
+    except Exception:
+        pass

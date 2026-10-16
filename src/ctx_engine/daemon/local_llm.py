@@ -39,7 +39,9 @@ PREFERRED_MODELS = [
 ]
 
 
-def is_ollama_available(host: str = "http://localhost:11434") -> bool:
+def is_ollama_available(host: str | None = None) -> bool:
+    if host is None:
+        host = _default_host()
     try:
         req = urllib.request.Request(f"{host}/api/tags", method="GET")
         with urllib.request.urlopen(req, timeout=2) as resp:
@@ -48,7 +50,9 @@ def is_ollama_available(host: str = "http://localhost:11434") -> bool:
         return False
 
 
-def get_available_models(host: str = "http://localhost:11434") -> list[str]:
+def get_available_models(host: str | None = None) -> list[str]:
+    if host is None:
+        host = _default_host()
     try:
         req = urllib.request.Request(f"{host}/api/tags", method="GET")
         with urllib.request.urlopen(req, timeout=2) as resp:
@@ -56,6 +60,39 @@ def get_available_models(host: str = "http://localhost:11434") -> list[str]:
             return [m["name"] for m in data.get("models", [])]
     except Exception:
         return []
+
+
+def _default_host(repo_root: Path | None = None) -> str:
+    direct = __import__("os").environ.get("CTX_OLLAMA_HOST")
+    if direct:
+        return direct
+    if repo_root is not None:
+        try:
+            from ctx_engine.config import get_config_value as _get_config_value
+
+            value = _get_config_value(repo_root, "ollama.host")
+            if value:
+                return value
+        except (ValueError, TypeError):
+            pass
+    return "http://localhost:11434"
+
+
+def _default_model_override(repo_root: Path | None = None) -> str | None:
+    import os as _os
+
+    direct = _os.environ.get("CTX_OLLAMA_MODEL")
+    if direct:
+        return direct
+    if repo_root is not None:
+        try:
+            from ctx_engine.config import get_config_value as _get_config_value
+
+            value = _get_config_value(repo_root, "ollama.model")
+            return value or None
+        except (ValueError, TypeError):
+            pass
+    return None
 
 
 def select_model(
@@ -178,6 +215,12 @@ class OllamaClient:
                 "DELETE FROM taint_queue WHERE function_id = ?", (fn_id,)
             )
             conn.commit()
+            try:
+                from ctx_engine.intelligence.cost_tracking import log_cost as _log_cost
+
+                _log_cost(self._repo_root, "watch-ollama", self._model, 0, 0)
+            except Exception:
+                pass
             logger.info(
                 "Ollama summarized (confidence=0.8): %s", fn_id
             )

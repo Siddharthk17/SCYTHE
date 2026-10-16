@@ -99,10 +99,19 @@ def run_update(repo_root: Path, file_path_str: str) -> None:
     }
 
     client = get_anthropic_client()
-    model = get_model_name()
+    model = get_model_name(repo_root)
 
     user_content = json.dumps([file_payload])
-    response_text, _, _ = call_llm_with_retry(client, model, SYSTEM_INSTRUCTION, user_content)
+    response_text, in_tok, out_tok = call_llm_with_retry(client, model, SYSTEM_INSTRUCTION, user_content)
+    try:
+        from ctx_engine.intelligence.cost_tracking import (
+            check_budget_warning as _check_budget,
+            log_cost as _log_cost,
+        )
+
+        _log_cost(repo_root, "summarize", model, in_tok, out_tok)
+    except Exception:
+        pass
     parsed_results = parse_response(response_text)
 
     apply_summary_batch(conn, parsed_results)
@@ -134,3 +143,11 @@ def run_update(repo_root: Path, file_path_str: str) -> None:
             print(f"    - {old_sum or '(none)'}")
             print(f"    + {new_sum or '(none)'}")
         print()
+    try:
+        from ctx_engine.intelligence.cost_tracking import check_budget_warning
+
+        warning = check_budget_warning(repo_root)
+        if warning:
+            print(f"  {warning}")
+    except Exception:
+        pass

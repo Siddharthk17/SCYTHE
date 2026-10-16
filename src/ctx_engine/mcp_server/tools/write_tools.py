@@ -102,6 +102,15 @@ def handle_add_decision(
     return f"Decision recorded: {decision_id}"
 
 
+def _history_cap(repo_root: Path, key: str, fallback: int) -> int:
+    try:
+        from ctx_engine.config import get_config_value as _get_config_value
+
+        return int(_get_config_value(Path(repo_root), key))
+    except (ValueError, TypeError):
+        return fallback
+
+
 def handle_log_session(
     conn: sqlite3.Connection,
     repo_root: Path | dict | None,
@@ -120,10 +129,12 @@ def handle_log_session(
         "INSERT INTO session_log (entry, files_touched, timestamp) VALUES (?, ?, ?)",
         (entry, files_touched, now),
     )
+    session_cap = _history_cap(repo_root, "history.session_log_cap", 10)
     conn.execute(
         "DELETE FROM session_log WHERE id NOT IN ("
-        "SELECT id FROM session_log ORDER BY timestamp DESC LIMIT 10"
-        ")"
+        "SELECT id FROM session_log ORDER BY timestamp DESC LIMIT ?"
+        ")",
+        (session_cap,),
     )
     conn.commit()
     count = conn.execute("SELECT count(*) FROM session_log").fetchone()[0]
@@ -150,11 +161,12 @@ def handle_log_change(
         "VALUES (?, ?, ?, 'model', ?)",
         (file_path, uuid.uuid4().hex[:12], summary, now),
     )
+    changes_cap = _history_cap(repo_root, "history.changes_per_file_cap", 20)
     conn.execute(
         "DELETE FROM changes WHERE file = ? AND id NOT IN ("
-        "SELECT id FROM changes WHERE file = ? ORDER BY timestamp DESC LIMIT 20"
+        "SELECT id FROM changes WHERE file = ? ORDER BY timestamp DESC LIMIT ?"
         ")",
-        (file_path, file_path),
+        (file_path, file_path, changes_cap),
     )
     conn.commit()
     return f"Change logged for {file_path}"

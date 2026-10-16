@@ -201,11 +201,26 @@ def generate_pr_description(
     client = get_anthropic_client()
     import os
 
-    model = os.environ.get("CTX_PR_MODEL") or os.environ.get("CTX_LLM_MODEL") or "claude-haiku-4-5-20251001"
+    direct = os.environ.get("CTX_PR_MODEL") or os.environ.get("CTX_LLM_MODEL")
+    if direct:
+        model = direct
+    else:
+        try:
+            from ctx_engine.config import get_config_value as _get_config_value
+
+            model = _get_config_value(repo_root, "llm.review_model")
+        except (ValueError, TypeError):
+            model = os.environ.get("CTX_PR_MODEL") or os.environ.get("CTX_LLM_MODEL") or "claude-haiku-4-5-20251001"
     response, in_tok, out_tok = call_llm_with_retry(
         client, model, PR_SYSTEM_PROMPT,
         build_pr_prompt(ctx, repo_root.name), max_tokens=4000,
     )
+    try:
+        from ctx_engine.intelligence.cost_tracking import log_cost as _log_cost
+
+        _log_cost(repo_root, "pr-description", model, in_tok, out_tok)
+    except Exception:
+        pass
     return response, ctx
 
 
@@ -251,3 +266,11 @@ def run_pr_description(
     ensure_gitignored(repo_root, OUTPUT_FILENAME)
     print()
     print(f"  Output written to: {out_path}")
+    try:
+        from ctx_engine.intelligence.cost_tracking import check_budget_warning
+
+        warning = check_budget_warning(repo_root)
+        if warning:
+            print(f"  {warning}")
+    except Exception:
+        pass

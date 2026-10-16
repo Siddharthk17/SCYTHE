@@ -121,7 +121,7 @@ def run_sync(repo_root: Path, dry_run: bool = False) -> None:
         total_out_tokens = 0
 
         if client is not None:
-            model = get_model_name()
+            model = get_model_name(repo_root)
 
             for i, batch in enumerate(batches):
                 batch_funcs_count = sum(
@@ -138,6 +138,12 @@ def run_sync(repo_root: Path, dry_run: bool = False) -> None:
                     total_funcs_updated += funcs_up
                     total_in_tokens += in_tok
                     total_out_tokens += out_tok
+                    try:
+                        from ctx_engine.intelligence.cost_tracking import log_cost as _log_cost
+
+                        _log_cost(repo_root, "summarize", model, in_tok, out_tok)
+                    except Exception:
+                        pass
 
                     print(f"    [{i+1}/{len(batches)}] batch: {len(batch)} files, {batch_funcs_count} functions -> done (in: {in_tok:,} tok, out: {out_tok:,} tok)")
                 except Exception as e:

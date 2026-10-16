@@ -365,8 +365,18 @@ def _estimate_cost(model: str, in_tok: int, out_tok: int) -> tuple[float, str]:
     return cost, f"${cost:.4f}"
 
 
-def _resolve_explain_model() -> str:
-    """Model precedence: CTX_EXPLAIN_MODEL > CTX_LLM_MODEL > DEFAULT_EXPLAIN_MODEL."""
+def _resolve_explain_model(repo_root: Path | None = None) -> str:
+    """Model precedence: CTX_EXPLAIN_MODEL > CTX_LLM_MODEL > config > DEFAULT_EXPLAIN_MODEL."""
+    direct = os.environ.get("CTX_EXPLAIN_MODEL") or os.environ.get("CTX_LLM_MODEL")
+    if direct:
+        return direct
+    if repo_root is not None:
+        try:
+            from ctx_engine.config import get_config_value as _get_config_value
+
+            return _get_config_value(repo_root, "llm.explain_model")
+        except (ValueError, TypeError):
+            pass
     return (
         os.environ.get("CTX_EXPLAIN_MODEL")
         or os.environ.get("CTX_LLM_MODEL")
@@ -384,7 +394,7 @@ def run_explain(repo_root: Path, target: str, depth: str | None = None) -> None:
         classified = _classify_target(target, conn)
         kind = depth or classified.kind
 
-        model = _resolve_explain_model()
+        model = _resolve_explain_model(repo_root)
         if kind == "function":
             response, in_tok, out_tok = _explain_function(classified, conn, repo_root, model)
         elif kind == "file":
@@ -426,6 +436,18 @@ def run_explain(repo_root: Path, target: str, depth: str | None = None) -> None:
         # Cost summary
         cost, cost_str = _estimate_cost(model, in_tok, out_tok)
         print()
-        print(f"  model: {model}  |  tokens: in={in_tok:,} out={out_tok:,}  |  cost: {cost_str}")
+        print(f"  model: {model}  |  tokens: in={in_tok:,} out={out_tok:,}  |  cost: {cost_str} (estimated)")
+        try:
+            from ctx_engine.intelligence.cost_tracking import (
+                check_budget_warning,
+                log_cost,
+            )
+
+            log_cost(repo_root, "explain", model, in_tok, out_tok)
+            warning = check_budget_warning(repo_root)
+            if warning:
+                print(f"  {warning}")
+        except Exception:
+            pass
     finally:
         conn.close()

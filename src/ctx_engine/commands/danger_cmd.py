@@ -76,4 +76,7 @@ def danger_detect(conn, repo_root=None, dry_run: bool = False) -> dict:
         "detected": report.detected,
         "added": report.added,
         "removed": report.removed,
+        "plugin_count": report.plugin_count,
+        "plugin_names": report.plugin_names,
+        "plugin_dangers": report.plugin_dangers,
     }
