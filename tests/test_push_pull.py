@@ -113,11 +113,12 @@ def test_push_updates_gitignore_additively(repo):
     (repo_root / ".gitignore").write_text("__pycache__/\n.ctx/\n*.pyc\n", encoding="utf-8")
     push_metadata(conn, repo_root)
     lines = (repo_root / ".gitignore").read_text().splitlines()
-    # Existing entries preserved, exception added right after the .ctx/ exclusion.
+    # Existing entries preserved, blanket .ctx/ migrated to .ctx/* so the
+    # exception is effective (bare .ctx/ makes git negations a no-op).
     assert lines[0] == "__pycache__/"
-    assert ".ctx/" in lines
+    assert ".ctx/*" in lines
     assert "!.ctx/shared-metadata.json" in lines
-    assert lines.index("!.ctx/shared-metadata.json") == lines.index(".ctx/") + 1
+    assert lines.index("!.ctx/shared-metadata.json") == lines.index(".ctx/*") + 1
     assert "*.pyc" in lines
 
 
@@ -125,7 +126,7 @@ def test_push_adds_block_when_no_gitignore(repo):
     conn, repo_root = repo
     push_metadata(conn, repo_root)
     lines = (repo_root / ".gitignore").read_text().splitlines()
-    assert ".ctx/" in lines
+    assert ".ctx/*" in lines
     assert "!.ctx/shared-metadata.json" in lines
 
 

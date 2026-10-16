@@ -54,18 +54,36 @@ def _canonical(doc: dict) -> str:
 def _update_gitignore(repo_root: Path) -> bool:
     """Ensure .ctx/shared-metadata.json is trackable despite a .ctx/ exclusion.
 
-    Additive only: never removes or reorders existing entries. Returns True if
-    the file was modified.
+    Git cannot re-include a file inside an excluded directory, so a blanket
+    ".ctx/" entry is migrated to ".ctx/*" (contents-ignore, directory itself
+    visible) before adding negations. Additive only apart from that
+    one-line migration. Returns True if the file was modified.
     """
     gitignore_path = repo_root / ".gitignore"
     current = gitignore_path.read_text(encoding="utf-8") if gitignore_path.exists() else ""
     lines = current.splitlines()
 
-    if any(line.strip() == GITIGNORE_EXCEPTION for line in lines):
+    wanted = [GITIGNORE_EXCEPTION, "!.ctx/config.toml"]
+    if ".ctx/*" not in [l.strip() for l in lines]:
+        # Migrate old directory exclusion so negations take effect.
+        migrated = False
+        for i, line in enumerate(lines):
+            if line.strip() == ".ctx/":
+                lines[i] = ".ctx/*"
+                migrated = True
+                break
+        if not migrated and not any(l.strip() in (".ctx/", ".ctx/*") for l in lines):
+            lines.append(".ctx/*")
+
+    if all(any(line.strip() == w for line in lines) for w in wanted):
+        # Still need to persist the .ctx/ -> .ctx/* migration if it happened.
+        new_text = "\n".join(lines) + "\n" if lines else ""
+        if new_text != current:
+            gitignore_path.write_text(new_text, encoding="utf-8")
+            return True
         return False
 
-    # Find the last line that excludes .ctx/ so the exception lands directly
-    # after it (git negation must come after the exclusion it overrides).
+    # Find the last contents-exclusion so exceptions land directly after it.
     exclusion_idx = None
     for i, line in enumerate(lines):
         stripped = line.strip()
@@ -73,13 +91,17 @@ def _update_gitignore(repo_root: Path) -> bool:
             exclusion_idx = i
 
     if exclusion_idx is not None:
-        lines.insert(exclusion_idx + 1, GITIGNORE_EXCEPTION)
+        insert_at = exclusion_idx + 1
+        for entry in wanted:
+            if entry not in [l.strip() for l in lines]:
+                lines.insert(insert_at, entry)
+                insert_at += 1
         gitignore_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return True
 
     if current and not current.endswith("\n"):
         current += "\n"
-    current += ".ctx/\n" + GITIGNORE_EXCEPTION + "\n"
+    current += ".ctx/*\n" + GITIGNORE_EXCEPTION + "\n!.ctx/config.toml\n"
     gitignore_path.write_text(current, encoding="utf-8")
     return True
 

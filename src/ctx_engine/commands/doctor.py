@@ -712,7 +712,7 @@ def _check_config_valid_toml(repo_root: Path) -> CheckResult:
 
 
 def _check_config_no_forbidden_keys(repo_root: Path) -> CheckResult:
-    from ctx_engine.config import FORBIDDEN_KEY_PATTERNS
+    from ctx_engine.config import is_forbidden_key
 
     p = repo_root / ".ctx" / "config.toml"
     if not p.exists():
@@ -725,6 +725,16 @@ def _check_config_no_forbidden_keys(repo_root: Path) -> CheckResult:
         with open(p, "rb") as handle:
             data = tomllib.load(handle)
     except Exception:
+        # Still surface secrets when the file is malformed (e.g. a duplicate
+        # [llm] table appended by hand). Text scan uses the same predicate
+        # as the parsed path so valid tunables like token_budget never match.
+        offenders = sorted(_scan_forbidden_keys_text(p))
+        if offenders:
+            return CheckResult(
+                "H2", "Configuration & Extensibility", "no forbidden keys in config", False,
+                f"forbidden key: {', '.join(offenders)}",
+                auto_fix=True, fix_label="remove forbidden keys from config.toml",
+            )
         return CheckResult("H2", "Configuration & Extensibility", "no forbidden keys in config", True,
                            detail="(H1 failed — cannot parse)")
     offenders = []
@@ -734,7 +744,7 @@ def _check_config_no_forbidden_keys(repo_root: Path) -> CheckResult:
                 continue
             for key in values:
                 dotted = f"{section}.{key}"
-                if any(pattern in dotted.lower() for pattern in FORBIDDEN_KEY_PATTERNS):
+                if is_forbidden_key(dotted):
                     offenders.append(dotted)
     if offenders:
         return CheckResult(
@@ -743,6 +753,78 @@ def _check_config_no_forbidden_keys(repo_root: Path) -> CheckResult:
             auto_fix=True, fix_label="remove forbidden keys from config.toml",
         )
     return CheckResult("H2", "Configuration & Extensibility", "no forbidden keys in config", True)
+
+
+def _scan_forbidden_keys_text(path: Path) -> set[str]:
+    """Best-effort forbidden-key scan that works on malformed TOML."""
+    from ctx_engine.config import is_forbidden_key
+
+    found: set[str] = set()
+    section = ""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return found
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip()
+            continue
+        if "=" not in line or not section:
+            continue
+        # Top-level section only; dotted sub-tables like costs.pricing.X
+        # never hold secrets and are skipped here.
+        if "." in section:
+            continue
+        key = line.split("=", 1)[0].strip().strip('"').strip("'")
+        if not key:
+            continue
+        dotted = f"{section}.{key}"
+        if is_forbidden_key(dotted):
+            found.add(dotted)
+    return found
+
+
+def _fix_forbidden_keys_text(path: Path) -> bool:
+    """Remove forbidden key lines from malformed TOML via text surgery.
+
+    Drops every line defining a forbidden key and dedupes repeated section
+    headers (keeping the first), so a hand-appended duplicate "[llm]" plus
+    secret is repaired to parseable TOML without losing valid settings.
+    """
+    from ctx_engine.config import is_forbidden_key
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    seen_sections: set[str] = set()
+    section = ""
+    kept: list[str] = []
+    removed: list[str] = []
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1].strip()
+            if section in seen_sections:
+                continue
+            seen_sections.add(section)
+            kept.append(raw_line)
+            continue
+        if "=" in stripped and section and "." not in section:
+            key = stripped.split("=", 1)[0].strip().strip('"').strip("'")
+            if key and is_forbidden_key(f"{section}.{key}"):
+                removed.append(f"{section}.{key}")
+                continue
+        kept.append(raw_line)
+    if not removed and len(kept) == len(lines):
+        return False
+    path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    if removed:
+        print(f"    removed forbidden key(s): {', '.join(sorted(set(removed)))}")
+    return True
 
 
 def _check_plugins_valid(repo_root: Path) -> CheckResult:
@@ -954,7 +1036,7 @@ def _apply_fix(check: CheckResult, repo_root: Path) -> bool:
             run_install_hooks(repo_root)
             return True
         if check.id == "H2":  # strip forbidden keys, keep everything else
-            from ctx_engine.config import FORBIDDEN_KEY_PATTERNS
+            from ctx_engine.config import is_forbidden_key
 
             p = repo_root / ".ctx" / "config.toml"
             if not p.exists():
@@ -967,7 +1049,7 @@ def _apply_fix(check: CheckResult, repo_root: Path) -> bool:
                 with open(p, "rb") as handle:
                     data = tomllib.load(handle)
             except Exception:
-                return False
+                return _fix_forbidden_keys_text(p)
             removed = []
             if isinstance(data, dict):
                 for section in list(data):
@@ -976,7 +1058,7 @@ def _apply_fix(check: CheckResult, repo_root: Path) -> bool:
                         continue
                     for key in list(values):
                         dotted = f"{section}.{key}"
-                        if any(pattern in dotted.lower() for pattern in FORBIDDEN_KEY_PATTERNS):
+                        if is_forbidden_key(dotted):
                             del values[key]
                             removed.append(dotted)
                     if not values:

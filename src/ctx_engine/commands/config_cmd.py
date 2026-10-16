@@ -19,18 +19,37 @@ import copy
 
 
 def _ensure_gitignore_exception(repo_root: Path) -> None:
+    # Git cannot re-include a file inside an excluded directory. A blanket
+    # ".ctx/" entry makes "!.ctx/config.toml" a no-op (verified via
+    # git check-ignore). ".ctx/*" ignores contents but keeps the directory
+    # itself unignored, so negations work. Migrate old entries in place.
     gitignore = repo_root / ".gitignore"
-    entry = "!.ctx/config.toml"
+    wanted = ["!.ctx/config.toml", "!.ctx/shared-metadata.json"]
     if gitignore.exists():
-        existing = gitignore.read_text(encoding="utf-8")
-        if entry in existing:
-            return
-        with open(gitignore, "a", encoding="utf-8") as handle:
-            if existing and not existing.endswith("\n"):
-                handle.write("\n")
-            handle.write(entry + "\n")
+        lines = gitignore.read_text(encoding="utf-8").splitlines()
     else:
-        gitignore.write_text(entry + "\n", encoding="utf-8")
+        lines = []
+    stripped = [l.strip() for l in lines]
+    changed = False
+    for i, line in enumerate(lines):
+        if line.strip() == ".ctx/":
+            lines[i] = ".ctx/*"
+            changed = True
+    if ".ctx/*" not in [l.strip() for l in lines]:
+        # No .ctx exclusion at all — add contents-ignore so new exceptions work.
+        lines.append(".ctx/*")
+        changed = True
+    for entry in wanted:
+        if entry not in [l.strip() for l in lines]:
+            # Negations must come after the exclusion they override.
+            try:
+                idx = [l.strip() for l in lines].index(".ctx/*")
+                lines.insert(idx + 1 + wanted.index(entry), entry)
+            except ValueError:
+                lines.append(entry)
+            changed = True
+    if changed or not gitignore.exists():
+        gitignore.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def run_config_init(repo_root: Path) -> None:

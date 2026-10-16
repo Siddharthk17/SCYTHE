@@ -172,6 +172,12 @@ def valid_keys() -> list[str]:
 
 
 def is_forbidden_key(dotted_key: str) -> bool:
+    # Valid tunable keys are known-safe and never treated as secrets,
+    # even when the name contains a forbidden substring. Without this
+    # exemption context.token_budget and summarize.batch_token_limit
+    # would be rejected because they contain "token".
+    if dotted_key in valid_keys():
+        return False
     lowered = dotted_key.lower()
     return any(pattern in lowered for pattern in FORBIDDEN_KEY_PATTERNS)
 
