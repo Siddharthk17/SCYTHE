@@ -26,3 +26,15 @@ for bin_dir in _CANDIDATE_BINS:
         if s not in _parts:
             _parts.insert(0, s)
 os.environ["PATH"] = os.pathsep.join(_parts)
+
+
+def parse_source_string(source: str, language: str):
+    """Parse source text in memory without a temp file.
+
+    Shared helper for adapter conformance tests. Returns (tree, source_bytes).
+    """
+    from ctx_engine.languages.registry import get_parser
+
+    blob = source.encode("utf-8")
+    tree = get_parser(language).parse(blob)
+    return tree, blob

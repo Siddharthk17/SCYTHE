@@ -51,8 +51,9 @@ def test_doctor_collect_runs_all_categories(git_repo):
     """All checks should be produced; no crashes on an empty (but valid) repo."""
     _make_indexed_repo(git_repo)
     checks = _collect_checks(git_repo)
-    # 7 A + 5 B + 7 C + 4 D + 3 E + 6 F + 4 G + 5 H = 41
-    assert len(checks) == 41
+    # Default mode is "off": D3/D4 (ollama) and D5 (api) are not run.
+    # 7 A + 5 B + 7 C + 2 D + 3 E + 6 F + 4 G + 5 H + 4 I + 4 J = 47
+    assert len(checks) == 47
     categories = {c.category for c in checks}
     assert "Prerequisites" in categories
     assert "Schema" in categories
@@ -61,6 +62,8 @@ def test_doctor_collect_runs_all_categories(git_repo):
     assert "Git Hooks" in categories
     assert "Output Files" in categories
     assert "Performance" in categories
+    assert "Hook Performance" in categories
+    assert "Language Adapter Consistency" in categories
 
 
 def test_doctor_a3_fails_when_db_missing(git_repo):

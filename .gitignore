@@ -49,9 +49,14 @@ node_modules/
 .ctx/watch.pid
 .ctx/watch.log
 .ctx/watch-state.json
+.ctx/costs.jsonl
+.ctx/hook-timings.jsonl
 
 # MCP config — generated per-workspace, user-specific
 .mcp.json
 CLAUDE.md
 .github/copilot-instructions.md
 .ctx/snapshots/
+
+# Local agent state (Serena MCP) — personal, not shared via git
+.serena/

@@ -918,7 +918,352 @@ CATEGORY_NAMES = {
     "F": "Output Files",
     "G": "Performance",
     "H": "Configuration & Extensibility",
+    "I": "Hook Performance",
+    "J": "Language Adapter Consistency",
 }
+
+
+def _resolve_summarization_mode(repo_root: Path) -> str:
+    try:
+        from ctx_engine.config import get_config_value as _get
+
+        mode = _get(repo_root, "daemon.summarization_mode")
+        return str(mode) if mode else "off"
+    except (ValueError, TypeError):
+        return "off"
+
+
+def _check_api_mode_config(repo_root: Path) -> CheckResult:
+    try:
+        from ctx_engine.config import get_config_value as _get
+
+        window = float(_get(repo_root, "daemon.api_mode_batch_window_seconds"))
+        max_batch = int(_get(repo_root, "daemon.api_mode_max_batch_size"))
+    except (ValueError, TypeError) as err:
+        return CheckResult(
+            "D5", "API and Models", "api_mode configuration sane", False,
+            f"invalid values: {err}", auto_fix=True,
+            fix_label="reset api_mode batch settings to defaults",
+        )
+    import os as _os
+
+    if not _os.environ.get("ANTHROPIC_API_KEY"):
+        return CheckResult(
+            "D5", "API and Models", "api_mode configuration sane", False,
+            "ANTHROPIC_API_KEY is not set (required for api mode)",
+        )
+    if window <= 0 or max_batch <= 0:
+        return CheckResult(
+            "D5", "API and Models", "api_mode configuration sane", False,
+            f"window={window:g}s max_batch={max_batch} must both be > 0",
+            auto_fix=True,
+            fix_label="reset api_mode batch settings to defaults",
+        )
+    return CheckResult(
+        "D5", "API and Models", "api_mode configuration sane", True,
+        detail=f"window={window:g}s max_batch={max_batch}",
+    )
+
+
+def _check_hooks_timeout(repo_root: Path) -> CheckResult:
+    try:
+        from ctx_engine.config import get_config_value as _get
+
+        value = float(_get(repo_root, "hooks.validate_timeout_ms"))
+    except (ValueError, TypeError) as err:
+        return CheckResult(
+            "I1", "Hook Performance", "hooks.validate_timeout_ms sane", False,
+            f"invalid: {err}", auto_fix=True, fix_label="reset to 100",
+        )
+    if value <= 0 or value > 5000:
+        return CheckResult(
+            "I1", "Hook Performance", "hooks.validate_timeout_ms sane", False,
+            f"hooks.validate_timeout_ms = {value:g} (must be > 0 and <= 5000)",
+            auto_fix=True, fix_label="reset to 100",
+        )
+    return CheckResult(
+        "I1", "Hook Performance", "hooks.validate_timeout_ms sane", True,
+        detail=f"hooks.validate_timeout_ms = {value:g} (sane)",
+    )
+
+
+def _check_max_file_size(repo_root: Path) -> CheckResult:
+    try:
+        from ctx_engine.config import get_config_value as _get
+
+        value = int(_get(repo_root, "hooks.max_file_size_bytes"))
+    except (ValueError, TypeError) as err:
+        return CheckResult(
+            "I2", "Hook Performance", "hooks.max_file_size_bytes sane", False,
+            f"invalid: {err}", auto_fix=True, fix_label="reset to default",
+        )
+    if value <= 0:
+        return CheckResult(
+            "I2", "Hook Performance", "hooks.max_file_size_bytes sane", False,
+            f"hooks.max_file_size_bytes = {value} (must be > 0)",
+            auto_fix=True, fix_label="reset to default",
+        )
+    return CheckResult(
+        "I2", "Hook Performance", "hooks.max_file_size_bytes sane", True,
+        detail=f"hooks.max_file_size_bytes = {value} (sane)",
+    )
+
+
+def _check_hook_timing_health(repo_root: Path) -> CheckResult:
+    path = repo_root / ".ctx" / "hook-timings.jsonl"
+    if not path.exists():
+        return CheckResult(
+            "I3", "Hook Performance", "recent hook timing health", True,
+            detail="(no hook timings recorded yet)",
+        )
+    try:
+        import json as _json
+
+        degraded = 0
+        total = 0
+        with open(path, encoding="utf-8") as handle:
+            lines = [ln for ln in handle if ln.strip()]
+        for ln in lines[-20:]:
+            try:
+                entry = _json.loads(ln)
+            except (ValueError, TypeError):
+                continue
+            total += 1
+            if entry.get("degraded"):
+                degraded += 1
+    except OSError as err:
+        return CheckResult(
+            "I3", "Hook Performance", "recent hook timing health", False,
+            f"cannot read: {err}",
+        )
+    if total == 0:
+        return CheckResult(
+            "I3", "Hook Performance", "recent hook timing health", True,
+            detail="(no parseable entries)",
+        )
+    pct = (degraded / total * 100) if total else 0.0
+    if degraded / total < 0.25:
+        detail = f"{degraded} of last {total} validations degraded ({pct:.0f}%)"
+        if degraded:
+            detail += " — within normal range, but consider 'ctx bench-hooks' if this trends upward"
+        return CheckResult(
+            "I3", "Hook Performance", "recent hook timing health", True, detail=detail
+        )
+    return CheckResult(
+        "I3", "Hook Performance", "recent hook timing health", False,
+        f"{degraded} of last {total} validations degraded ({pct:.0f}%) — "
+        f"run 'ctx bench-hooks' and consider raising hooks.validate_timeout_ms",
+    )
+
+
+def _check_hook_timings_parseable(repo_root: Path) -> CheckResult:
+    path = repo_root / ".ctx" / "hook-timings.jsonl"
+    if not path.exists():
+        return CheckResult(
+            "I4", "Hook Performance", "hook-timings.jsonl parseable", True,
+            detail="(no hook timings recorded yet)",
+        )
+    valid = 0
+    corrupt = 0
+    try:
+        import json as _json
+
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    _json.loads(line)
+                    valid += 1
+                except (ValueError, TypeError):
+                    corrupt += 1
+    except OSError as err:
+        return CheckResult(
+            "I4", "Hook Performance", "hook-timings.jsonl parseable", False,
+            f"cannot read: {err}",
+        )
+    if corrupt and valid == 0:
+        return CheckResult(
+            "I4", "Hook Performance", "hook-timings.jsonl parseable", False,
+            f"{corrupt} corrupted lines, no valid entries",
+        )
+    detail = f"({valid} entries" + (f", {corrupt} corrupted lines skipped" if corrupt else "") + ")"
+    return CheckResult(
+        "I4", "Hook Performance", "hook-timings.jsonl parseable", True, detail=detail
+    )
+
+
+def _conformance_fixtures() -> dict[str, str]:
+    return {
+        "python": "class Widget:\n    def public_method(self, x: int) -> str:\n        self.value = x\n        return str(x)\n",
+        "typescript": "export class Widget {\n    value: number = 0;\n    publicMethod(x: number): string {\n        this.value = x;\n        return String(x);\n    }\n}\n",
+        "tsx": "export class Widget {\n    value: number = 0;\n    publicMethod(x: number): string {\n        this.value = x;\n        return String(x);\n    }\n}\n",
+        "javascript": "export class Widget {\n    publicMethod(x) {\n        this.value = x;\n        return String(x);\n    }\n}\n",
+        "go": "package widget\ntype Widget struct {\n    Value int\n}\nfunc (w *Widget) PublicMethod(x int) string {\n    w.Value = x\n    return \"\"\n}\n",
+        "rust": "pub struct Widget {\n    pub value: i32,\n}\nimpl Widget {\n    pub fn public_method(&mut self, x: i32) -> String {\n        self.value = x;\n        String::new()\n    }\n}\n",
+        "java": "public class Widget {\n    public String publicMethod(int x) {\n        this.value = x;\n        return String.valueOf(x);\n    }\n}\n",
+        "csharp": "public class Widget {\n    public string PublicMethod(int x) {\n        this.Value = x;\n        return x.ToString();\n    }\n}\n",
+        "kotlin": "class Widget {\n    fun publicMethod(x: Int): String {\n        this.value = x\n        return x.toString()\n    }\n}\n",
+        "ruby": "class Widget\n    def public_method(x)\n        @value = x\n        x.to_s\n    end\nend\n",
+    }
+
+
+def _check_conformance_parse(repo_root: Path) -> CheckResult:
+    try:
+        from ctx_engine.languages.registry import LANGUAGES, get_parser
+        from ctx_engine.reindex import ADAPTERS
+    except Exception as err:
+        return CheckResult(
+            "J1", "Language Adapter Consistency",
+            "all registered languages parse their conformance fixture", False,
+            f"cannot load adapters: {err}",
+        )
+    failures: list[str] = []
+    for language in sorted(LANGUAGES.keys()):
+        src = _conformance_fixtures().get(language)
+        if src is None:
+            failures.append(f"{language}: no fixture")
+            continue
+        try:
+            blob = src.encode()
+            tree = get_parser(language).parse(blob)
+            struct = ADAPTERS[language].extract(tree, blob)
+            if not struct.functions:
+                failures.append(f"{language}: no functions extracted")
+        except Exception as err:
+            failures.append(f"{language}: {err}")
+    if failures:
+        return CheckResult(
+            "J1", "Language Adapter Consistency",
+            "all registered languages parse their conformance fixture", False,
+            "; ".join(failures[:5]),
+        )
+    return CheckResult(
+        "J1", "Language Adapter Consistency",
+        "all registered languages parse their conformance fixture", True,
+        detail=f"({len(LANGUAGES)} languages)",
+    )
+
+
+def _check_conformance_signatures(repo_root: Path) -> CheckResult:
+    try:
+        from ctx_engine.languages.registry import LANGUAGES, get_parser
+        from ctx_engine.reindex import ADAPTERS
+    except Exception as err:
+        return CheckResult(
+            "J2", "Language Adapter Consistency",
+            "signature extraction is trailing-token-clean", False, f"{err}"
+        )
+    bad: list[str] = []
+    for language in sorted(LANGUAGES.keys()):
+        src = _conformance_fixtures().get(language, "")
+        try:
+            blob = src.encode()
+            tree = get_parser(language).parse(blob)
+            struct = ADAPTERS[language].extract(tree, blob)
+            for fn in struct.functions:
+                if fn.signature.rstrip().endswith((":", "{", "=>")):
+                    bad.append(f"{language}: {fn.signature!r}")
+        except Exception as err:
+            bad.append(f"{language}: {err}")
+    if bad:
+        return CheckResult(
+            "J2", "Language Adapter Consistency",
+            "signature extraction is trailing-token-clean", False,
+            "; ".join(bad[:5]),
+        )
+    return CheckResult(
+        "J2", "Language Adapter Consistency",
+        "signature extraction is trailing-token-clean", True,
+    )
+
+
+def _check_conformance_hash(repo_root: Path) -> CheckResult:
+    try:
+        from ctx_engine.languages.registry import LANGUAGES, get_parser
+        from ctx_engine.hashing import file_semantic_hash
+    except Exception as err:
+        return CheckResult(
+            "J3", "Language Adapter Consistency",
+            "semantic hash reformatting-invariance holds", False, f"{err}"
+        )
+    bad: list[str] = []
+    for language in sorted(LANGUAGES.keys()):
+        src = _conformance_fixtures().get(language, "")
+        try:
+            blob = src.encode()
+            tree = get_parser(language).parse(blob)
+            h1 = file_semantic_hash(tree, blob, language)
+            reformatted = "\n\n".join(
+                "  " + line if line.strip() else line for line in src.splitlines()
+            )
+            rb = reformatted.encode()
+            rtree = get_parser(language).parse(rb)
+            h2 = file_semantic_hash(rtree, rb, language)
+            if h1 != h2:
+                bad.append(language)
+        except Exception as err:
+            bad.append(f"{language}: {err}")
+    if bad:
+        return CheckResult(
+            "J3", "Language Adapter Consistency",
+            "semantic hash reformatting-invariance holds", False,
+            f"failed for: {', '.join(bad[:5])}",
+        )
+    return CheckResult(
+        "J3", "Language Adapter Consistency",
+        "semantic hash reformatting-invariance holds", True,
+    )
+
+
+def _check_tier2_usage(repo_root: Path) -> CheckResult:
+    try:
+        from ctx_engine.config import get_config_value as _get
+
+        tier1 = _get(repo_root, "languages.tier1")
+        tier1_set = set(tier1) if isinstance(tier1, list) else set()
+    except (ValueError, TypeError):
+        tier1_set = {"python", "typescript", "tsx", "javascript"}
+    try:
+        from ctx_engine.db import connect as _connect
+        from ctx_engine.discovery import EXTENSION_TO_LANGUAGE
+
+        db_path = repo_root / ".ctx" / "index.db"
+        if not db_path.exists():
+            return CheckResult(
+                "J4", "Language Adapter Consistency",
+                "tier-2 languages used in this project", True,
+                detail="(no index — nothing to report)",
+            )
+        conn = _connect(db_path)
+        try:
+            rows = conn.execute("SELECT DISTINCT path FROM files").fetchall()
+        finally:
+            conn.close()
+        used: set[str] = set()
+        for r in rows:
+            p = r[0] if not isinstance(r, dict) and not hasattr(r, "__getitem__") else r["path"]
+            try:
+                lang = EXTENSION_TO_LANGUAGE.get(Path(p).suffix.lower())
+            except Exception:
+                continue
+            if lang:
+                used.add(lang)
+        tier2_used = sorted(used - tier1_set)
+        if tier2_used:
+            detail = f"{', '.join(tier2_used)}  (informational only — not a failure)"
+        else:
+            detail = "(only tier-1 languages used so far)"
+        return CheckResult(
+            "J4", "Language Adapter Consistency",
+            "tier-2 languages used in this project", True, detail=detail,
+        )
+    except Exception as err:
+        return CheckResult(
+            "J4", "Language Adapter Consistency",
+            "tier-2 languages used in this project", True,
+            detail=f"(cannot determine: {err})",
+        )
 
 
 def _collect_checks(repo_root: Path) -> list[CheckResult]:
@@ -949,8 +1294,12 @@ def _collect_checks(repo_root: Path) -> list[CheckResult]:
     # D — API and models
     checks.append(_check_anthropic_key())
     checks.append(_check_anthropic_api())
-    checks.append(_check_ollama())
-    checks.append(_check_ollama_model())
+    _mode = _resolve_summarization_mode(repo_root)
+    if _mode == "ollama":
+        checks.append(_check_ollama())
+        checks.append(_check_ollama_model())
+    if _mode == "api":
+        checks.append(_check_api_mode_config(repo_root))
     # E — Git hooks
     checks.append(_check_pre_commit(repo_root))
     checks.append(_check_post_commit(repo_root))
@@ -973,6 +1322,16 @@ def _collect_checks(repo_root: Path) -> list[CheckResult]:
     checks.append(_check_plugins_valid(repo_root))
     checks.append(_check_costs_parseable(repo_root))
     checks.append(_check_all_hooks(repo_root))
+    # I — Hook Performance
+    checks.append(_check_hooks_timeout(repo_root))
+    checks.append(_check_max_file_size(repo_root))
+    checks.append(_check_hook_timing_health(repo_root))
+    checks.append(_check_hook_timings_parseable(repo_root))
+    # J — Language Adapter Consistency
+    checks.append(_check_conformance_parse(repo_root))
+    checks.append(_check_conformance_signatures(repo_root))
+    checks.append(_check_conformance_hash(repo_root))
+    checks.append(_check_tier2_usage(repo_root))
     return checks
 
 
@@ -1106,6 +1465,19 @@ def _apply_fix(check: CheckResult, repo_root: Path) -> bool:
                 conn.commit()
                 conn.close()
                 return True
+        if check.id in ("I1", "I2"):
+            from ctx_engine.config import reset_config_value
+
+            # Resetting removes the bad value; the built-in default applies.
+            # Idempotent: second run finds nothing to reset and reports done.
+            reset_config_value(repo_root, "hooks.validate_timeout_ms" if check.id == "I1" else "hooks.max_file_size_bytes")
+            return True
+        if check.id == "D5":
+            from ctx_engine.config import reset_config_value
+
+            reset_config_value(repo_root, "daemon.api_mode_batch_window_seconds")
+            reset_config_value(repo_root, "daemon.api_mode_max_batch_size")
+            return True
     except Exception as err:
         print(f"  Fix {check.id} failed: {err}", flush=True)
         return False

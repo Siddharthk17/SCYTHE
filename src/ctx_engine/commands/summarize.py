@@ -10,6 +10,7 @@ from ctx_engine.intelligence.llm_client import (
     SYSTEM_INSTRUCTION,
     apply_summary_batch,
     batch_files,
+    call_llm_batch,
     call_llm_with_retry,
     get_anthropic_client,
     get_model_name,
@@ -258,13 +259,18 @@ def run_summarize(
     for i, batch in enumerate(batches):
         batch_funcs_count = sum(1 for f in batch for func in f["functions"] if func["needs_summary"])
         batch_paths = [f.get("path", "?") for f in batch]
-        user_content = json.dumps(batch)
         response_text = ""
         try:
-            response_text, in_tok, out_tok = call_llm_with_retry(
-                client, model, SYSTEM_INSTRUCTION, user_content
+            # Shared batch path (Week 11): same call+parse as watch-api.
+            # Client/model resolved via this module's (mockable) factories
+            # and passed through so existing unittest.mock.patch targets
+            # on ctx_engine.commands.summarize keep working.
+            result = call_llm_batch(
+                repo_root, batch, "summarize", _client=client, _model=model
             )
-            parsed_results = parse_response(response_text)
+            response_text = json.dumps(result.parsed)[:2000]
+            parsed_results = result.parsed
+            in_tok, out_tok = result.input_tokens, result.output_tokens
 
             files_up, funcs_up = apply_summary_batch(conn, parsed_results)
             total_files_updated += files_up

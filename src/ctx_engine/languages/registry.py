@@ -42,3 +42,14 @@ def parse_file(path: Path, language: str) -> tuple[Tree, bytes]:
     source = path.read_bytes()
     tree = get_parser(language).parse(source)
     return tree, source
+
+
+def parse_bytes(blob: bytes, language: str) -> tuple[Tree, bytes]:
+    """Parse raw bytes directly without touching the filesystem.
+
+    Staged blobs and working-tree files are not guaranteed to be the same
+    bytes, so validation must parse the blob itself rather than re-reading
+    the file from disk.
+    """
+    tree = get_parser(language).parse(blob)
+    return tree, blob

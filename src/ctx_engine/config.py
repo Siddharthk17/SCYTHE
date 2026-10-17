@@ -36,6 +36,18 @@ DEFAULT_CONFIG = {
     "watch": {
         "debounce_ms": 500,
     },
+    "daemon": {
+        "summarization_mode": "off",
+        "api_mode_batch_window_seconds": 90,
+        "api_mode_max_batch_size": 20,
+    },
+    "hooks": {
+        "validate_timeout_ms": 100,
+        "max_file_size_bytes": 2_000_000,
+    },
+    "languages": {
+        "tier1": ["python", "typescript", "tsx", "javascript"],
+    },
     "context": {
         "token_budget": 8000,
     },
@@ -128,6 +140,19 @@ def _coerce_to_default_type(raw: str, default):
         if lowered in ("0", "false", "no", "off"):
             return False
         raise ValueError(f"Cannot coerce '{raw}' to bool.")
+    if isinstance(default, list):
+        if isinstance(raw, list):
+            return [str(v) for v in raw]
+        text = raw.strip()
+        if text.startswith("[") and text.endswith("]"):
+            inner = text[1:-1].strip()
+            if not inner:
+                return []
+            parts = [p.strip().strip('"').strip("'") for p in inner.split(",")]
+            return [p for p in parts if p]
+        if not text:
+            return []
+        return [p.strip() for p in text.split(",") if p.strip()]
     if isinstance(default, int) and not isinstance(default, bool):
         return int(raw)
     if isinstance(default, float):
@@ -187,6 +212,17 @@ def _format_toml_value(value) -> str:
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return repr(value)
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            if isinstance(item, bool):
+                parts.append("true" if item else "false")
+            elif isinstance(item, (int, float)):
+                parts.append(repr(item))
+            else:
+                escaped = str(item).replace("\\", "\\\\").replace('"', '\\"')
+                parts.append(f'"{escaped}"')
+        return "[" + ", ".join(parts) + "]"
     escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 

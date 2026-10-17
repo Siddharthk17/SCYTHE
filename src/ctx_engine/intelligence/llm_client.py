@@ -165,6 +165,7 @@ def parse_response(text: str) -> list[dict]:
         raise ValueError(f"Expected JSON array from LLM, got {type(result).__name__}")
     return result
 
+
 def batch_files(
     files_data: list[dict],
     max_files_per_batch: int = 20,
@@ -195,6 +196,7 @@ def batch_files(
     if current_batch:
         batches.append(current_batch)
     return batches
+
 
 def apply_summary_batch(conn: sqlite3.Connection, parsed_results: list[dict]) -> tuple[int, int]:
     """Apply the parsed summary results to the database and clean up taint queue.
@@ -264,3 +266,173 @@ def apply_summary_batch(conn: sqlite3.Connection, parsed_results: list[dict]) ->
                 conn.execute("DELETE FROM taint_queue WHERE function_id = ?", (func_id,))
                 functions_updated += 1
     return files_updated, functions_updated
+
+
+# ── Week 11: shared batch machinery (ctx summarize + watch-api) ─────────────
+
+from dataclasses import dataclass, field
+from pathlib import Path as _Path
+
+
+@dataclass
+class LLMBatchResult:
+    parsed: list[dict] = field(default_factory=list)
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+def _build_payload_for_files(
+    conn: sqlite3.Connection,
+    repo_root: _Path,
+    files_touched: set[str],
+    force_function_ids: set[str] | None = None,
+) -> list[dict]:
+    """Build summarize-shaped file payloads for an explicit file set.
+
+    Same per-file/per-function keys as ``ctx summarize`` (path,
+    purpose_needs_update, exports, imports, used_by_count, current_purpose,
+    functions[] with id/signature/mutates/needs_summary/current_summary/
+    taint_warning/source). Functions in ``force_function_ids`` are always
+    marked needs_summary with source included.
+    """
+    from ctx_engine.commands.summarize import (
+        get_function_source as _get_source,
+        get_taint_warning as _get_taint,
+    )
+
+    forced = set(force_function_ids or set())
+    files_data: list[dict] = []
+    for path in sorted(files_touched):
+        f_row = conn.execute(
+            "SELECT path, purpose, exports, imports, used_by_count, is_stale "
+            "FROM files WHERE path = ?",
+            (path,),
+        ).fetchone()
+        if f_row is None:
+            continue
+        if isinstance(f_row, sqlite3.Row):
+            purpose = f_row["purpose"]
+            exports_raw = f_row["exports"]
+            imports_raw = f_row["imports"]
+            used_by_count = f_row["used_by_count"]
+            is_stale = f_row["is_stale"]
+        else:
+            purpose, exports_raw, imports_raw, used_by_count, is_stale = (
+                f_row[1], f_row[2], f_row[3], f_row[4], f_row[5],
+            )
+        is_taint_only = purpose is not None and is_stale == 0
+
+        try:
+            import json as _json
+
+            exports = _json.loads(exports_raw) if exports_raw else []
+            imports = _json.loads(imports_raw) if imports_raw else []
+        except (ValueError, TypeError):
+            exports, imports = [], []
+
+        funcs_rows = conn.execute(
+            "SELECT id, class_name, name, signature, summary, summary_long, "
+            "danger, line_start, line_end, is_stale, is_tainted, taint_source, "
+            "mutates FROM functions WHERE file = ?;",
+            (path,),
+        ).fetchall()
+
+        funcs_payload: list[dict] = []
+        for func_row in funcs_rows:
+            if isinstance(func_row, sqlite3.Row):
+                fid = func_row["id"]
+                needs = (
+                    func_row["is_stale"] == 1
+                    or func_row["summary"] is None
+                    or func_row["is_tainted"] == 1
+                    or fid in forced
+                )
+                import json as _json2
+
+                muts = _json2.loads(func_row["mutates"]) if func_row["mutates"] else []
+                entry: dict = {
+                    "id": fid,
+                    "signature": func_row["signature"],
+                    "mutates": muts,
+                    "needs_summary": needs,
+                    "current_summary": func_row["summary"],
+                    "taint_warning": _get_taint(conn, func_row["taint_source"])
+                    if func_row["is_tainted"] == 1
+                    else None,
+                }
+                if needs:
+                    entry["source"] = _get_source(
+                        repo_root / path, func_row["line_start"], func_row["line_end"]
+                    )
+            else:
+                fid = func_row[0]
+                needs = fid in forced
+                entry = {
+                    "id": fid,
+                    "signature": func_row[3],
+                    "mutates": [],
+                    "needs_summary": needs,
+                    "current_summary": None,
+                    "taint_warning": None,
+                }
+            funcs_payload.append(entry)
+
+        files_data.append(
+            {
+                "path": path,
+                "purpose_needs_update": not is_taint_only,
+                "exports": exports,
+                "imports": imports,
+                "used_by_count": used_by_count,
+                "current_purpose": purpose,
+                "functions": funcs_payload,
+            }
+        )
+    return files_data
+
+
+def build_batch_payload(
+    conn: sqlite3.Connection,
+    repo_root: _Path,
+    function_ids: list[str],
+) -> list[dict]:
+    """Build a summarize-shaped payload scoped to explicit function ids."""
+    if not function_ids:
+        return []
+    placeholders = ",".join("?" * len(function_ids))
+    rows = conn.execute(
+        f"SELECT DISTINCT file FROM functions WHERE id IN ({placeholders})",
+        function_ids,
+    ).fetchall()
+    files_touched = set()
+    for r in rows:
+        if isinstance(r, sqlite3.Row):
+            files_touched.add(r["file"])
+        else:
+            files_touched.add(r[0])
+    return _build_payload_for_files(
+        conn, repo_root, files_touched, force_function_ids=set(function_ids)
+    )
+
+
+def call_llm_batch(
+    repo_root: _Path,
+    payload: list[dict],
+    command_name: str,
+    _client: Any | None = None,
+    _model: str | None = None,
+) -> LLMBatchResult:
+    """Run one LLM batch: call, parse, return usage. Shared by summarize/api-watch.
+
+    ``_client``/``_model`` overrides exist so ``ctx summarize`` (whose tests
+    mock its own module-level client factory) can reuse this path without
+    changing its observable mock points. Production callers omit them.
+    """
+    client = _client if _client is not None else get_anthropic_client()
+    model = _model if _model is not None else get_model_name(repo_root)
+    user_content = json.dumps(payload)
+    response_text, in_tok, out_tok = call_llm_with_retry(
+        client, model, SYSTEM_INSTRUCTION, user_content
+    )
+    parsed = parse_response(response_text)
+    return LLMBatchResult(parsed=parsed, input_tokens=in_tok, output_tokens=out_tok)

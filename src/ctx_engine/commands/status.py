@@ -332,9 +332,16 @@ def run_status(repo_root: Path, full: bool = False) -> None:
     state_path = repo_root / ".ctx" / "watch-state.json"
     pid = read_pid_file(pid_path)
     ollama_host = os.environ.get("CTX_OLLAMA_HOST", "http://localhost:11434")
+    try:
+        from ctx_engine.config import get_config_value as _get_mode
+
+        _resolved_mode = str(_get_mode(repo_root, "daemon.summarization_mode"))
+    except (ValueError, TypeError):
+        _resolved_mode = "off"
     if pid is not None and is_process_alive(pid):
         state = read_watch_state(state_path)
-        watcher_status = f"RUNNING (PID: {pid})"
+        _state_mode = state.get("summarization_mode") or _resolved_mode
+        watcher_status = f"RUNNING (mode: {_state_mode})"
         watcher_events = (
             f"{state.get('events_processed', 0)} processed "
             f"({state.get('semantic_changes', 0)} semantic, "
@@ -347,6 +354,25 @@ def run_status(repo_root: Path, full: bool = False) -> None:
         watcher_status = "NOT RUNNING"
         watcher_events = ""
         watcher_ollama = _ollama_status_text(ollama_host)
+
+    try:
+        from ctx_engine.languages.registry import LANGUAGES as _LANGS
+
+        _total_langs = len(_LANGS)
+        try:
+            from ctx_engine.config import get_config_value as _get_tier
+
+            _tier1 = _get_tier(repo_root, "languages.tier1")
+            _tier1_count = len(_tier1) if isinstance(_tier1, list) else 0
+        except (ValueError, TypeError):
+            _tier1_count = 4
+        _tier2_count = max(0, _total_langs - _tier1_count)
+        languages_line = (
+            f"{_total_langs} registered — {_tier1_count} tier-1 "
+            f"(battle-tested), {_tier2_count} tier-2 (newer, less exercised)"
+        )
+    except Exception:
+        languages_line = "10 registered — 4 tier-1 (battle-tested), 6 tier-2 (newer, less exercised)"
 
     total_files = counts.get("files", 0)
     if total_files > 0:
@@ -449,6 +475,7 @@ def run_status(repo_root: Path, full: bool = False) -> None:
         print(f"  mcp:      {mcp_config_status}")
         print(f"  watcher:  {watcher_status}")
         print(f"  ollama:   {watcher_ollama}")
+        print(f"  languages:  {languages_line}")
         print(f"  export:   {' | '.join(export_parts)}")
         if any("OUTDATED" in s for s in export_statuses.values()):
             print(f"            → run 'ctx export' to refresh")
@@ -512,6 +539,7 @@ def run_status(repo_root: Path, full: bool = False) -> None:
         if watcher_status.startswith("RUNNING"):
             print(f"    events: {watcher_events}")
         print(f"    ollama: {watcher_ollama}")
+        print(f"    languages: {languages_line}")
         print()
         print("  mtime cache:")
         if total_files > 0:

@@ -211,27 +211,29 @@ def generate_mcp_config_cmd(repo_root: Path) -> None:
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
     help="Path to the repository root directory."
 )
-@click.option("--with-ollama", is_flag=True, help="Enable local LLM summarization via Ollama.")
+@click.option("--with-ollama", is_flag=True, help="Enable local LLM summarization via Ollama (deprecated: use --mode ollama).")
+@click.option("--mode", type=click.Choice(["off", "ollama", "api"]), default=None, help="Summarization mode override for this invocation only (never written to config).")
 @click.option("--daemon", is_flag=True, help="Run in the background as a daemon.")
 @click.option("--log-file", default=None, help="Path to the watch log file.")
 @click.pass_context
-def watch_group(ctx: click.Context, repo_root: Path, with_ollama: bool, daemon: bool, log_file: str | None) -> None:
+def watch_group(ctx: click.Context, repo_root: Path, with_ollama: bool, mode: str | None, daemon: bool, log_file: str | None) -> None:
     """Watch files for changes and update the index automatically."""
     ctx.ensure_object(dict)
     ctx.obj["repo_root"] = repo_root.resolve()
     if ctx.invoked_subcommand is None:
-        ctx.invoke(watch_start_cmd, with_ollama=with_ollama, daemon=daemon, log_file=log_file)
+        ctx.invoke(watch_start_cmd, with_ollama=with_ollama, mode=mode, daemon=daemon, log_file=log_file)
 
 @watch_group.command(name="start")
-@click.option("--with-ollama", is_flag=True, help="Enable local LLM summarization via Ollama.")
+@click.option("--with-ollama", is_flag=True, help="Enable local LLM summarization via Ollama (deprecated: use --mode ollama).")
+@click.option("--mode", type=click.Choice(["off", "ollama", "api"]), default=None, help="Summarization mode override for this invocation only.")
 @click.option("--daemon", is_flag=True, help="Run in the background as a daemon.")
 @click.option("--log-file", default=None, help="Path to the watch log file.")
 @click.pass_context
-def watch_start_cmd(ctx: click.Context, with_ollama: bool, daemon: bool, log_file: str | None) -> None:
+def watch_start_cmd(ctx: click.Context, with_ollama: bool, mode: str | None, daemon: bool, log_file: str | None) -> None:
     """Start the file watcher daemon."""
     from ctx_engine.commands.watch import run_watch
     try:
-        run_watch(ctx.obj["repo_root"], with_ollama, daemon, log_file)
+        run_watch(ctx.obj["repo_root"], with_ollama, daemon, log_file, mode=mode)
     except SystemExit:
         raise
     except Exception as err:
@@ -1204,6 +1206,23 @@ def costs_cmd(repo_root: Path, since: str | None, json_output: bool) -> None:
     try:
         run_costs(repo_root.resolve(), since=since, json_output=json_output)
     except (FileNotFoundError, ValueError) as err:
+        click.echo(f"Error: {err}", err=True)
+        raise click.Abort()
+
+
+@main.command(name="bench-hooks")
+@click.option(
+    "--repo-root",
+    default=".",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option("--samples", default=20, type=int, help="Files to sample for timing.")
+def bench_hooks_cmd(repo_root: Path, samples: int) -> None:
+    """Measure real validation timing without touching git state."""
+    from ctx_engine.commands.bench_hooks_cmd import run_bench_hooks
+    try:
+        run_bench_hooks(repo_root.resolve(), samples=samples)
+    except FileNotFoundError as err:
         click.echo(f"Error: {err}", err=True)
         raise click.Abort()
 

@@ -37,12 +37,16 @@ class CtxFileEventHandler(FileSystemEventHandler):
         debounce_seconds: float = 0.5,
         ollama_client: "OllamaClient | None" = None,
         state_path: Path | None = None,
+        api_summarizer=None,
+        summarization_mode: str | None = None,
     ):
         self._conn_factory = conn_factory
         self._repo_root = repo_root
         self._parseable_extensions = {e.lower() for e in parseable_extensions}
         self._debounce_seconds = debounce_seconds
         self._ollama_client = ollama_client
+        self._api_summarizer = api_summarizer
+        self._summarization_mode_override = summarization_mode
         self._state_path = state_path
         self._pending: dict[str, float] = {}
         self._pending_lock = threading.Lock()
@@ -203,7 +207,36 @@ class CtxFileEventHandler(FileSystemEventHandler):
             len(changed_function_ids),
         )
 
-        if self._ollama_client is not None and changed_function_ids:
-            self._ollama_client.enqueue(rel_path, changed_function_ids)
+        self._handle_semantic_change(rel_path, changed_function_ids)
 
         self._update_watch_state("semantic", rel_path)
+
+    def _resolve_mode(self) -> str:
+        if self._summarization_mode_override is not None:
+            return self._summarization_mode_override
+        try:
+            from ctx_engine.config import get_config_value as _get
+
+            mode = _get(self._repo_root, "daemon.summarization_mode")
+            return str(mode) if mode else "off"
+        except (ValueError, TypeError):
+            return "off"
+
+    def _handle_semantic_change(
+        self, rel_path: str, changed_function_ids: list[str]
+    ) -> None:
+        # The mechanical part — is_stale, confidence decay, taint propagation —
+        # already happened inside reindex_single_file() before this method is
+        # ever called. Everything below is purely about whether something
+        # ALSO writes a fresh replacement summary automatically.
+        if not changed_function_ids:
+            return
+        mode = self._resolve_mode()
+
+        if mode == "ollama" and self._ollama_client is not None:
+            self._ollama_client.enqueue(rel_path, changed_function_ids)
+        elif mode == "api" and self._api_summarizer is not None:
+            self._api_summarizer.enqueue(changed_function_ids)
+        # mode == "off", or the configured mode's client failed to initialize
+        # at startup (e.g. "ollama" chosen but no reachable Ollama instance):
+        # do nothing further. Staleness signals remain accurate either way.
